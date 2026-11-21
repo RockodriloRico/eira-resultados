@@ -1,0 +1,23 @@
+# Dependencias y builds
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# AWS SAM
+.aws-sam/
+samconfig.local.toml
+
+# Variables de entorno y secretos (nunca versionar)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor / SO
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
