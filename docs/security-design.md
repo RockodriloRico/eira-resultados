@@ -40,11 +40,40 @@ Las respuestas `429` de API Gateway no dependen de la existencia de un expedient
 
 ### 1.2 AWS WAF: incluido en la plantilla SAM
 
-**Decisión:** la plantilla incluye `AWS::WAFv2::WebACL` (scope `REGIONAL`) y `AWS::WAFv2::WebACLAssociation` con el stage de la API REST, bajo el parámetro `EnableWaf` (por defecto `true`).
+**Decisión:** la plantilla de la etapa 1 incluirá `AWS::WAFv2::WebACL` (scope `REGIONAL`) y `AWS::WAFv2::WebACLAssociation` con el stage de la API REST, bajo el parámetro `EnableWaf` (por defecto `true`).
 
-- Una `Rule` de CloudFormation impide `Stage=prod` con `EnableWaf=false`.
 - En `dev`/`demo` puede desactivarse por costo. En ese caso **la limitación por IP no existe en ese entorno** y queda documentada como limitación conocida del MVP; siguen vigentes el throttling agregado y el límite por paciente.
+- En `prod` no puede desactivarse (ver 1.2.1).
 - Ver [ADR-0008](adr/0008-limitacion-de-tasa.md).
+
+#### 1.2.1 Cómo se impide `EnableWaf=false` en producción
+
+Son controles de **infraestructura y despliegue**, no reglas de AWS WAF: una regla de WAF filtra solicitudes HTTP y no puede impedir que el Web ACL deje de existir.
+
+| Capa                                          | Mecanismo                                                                                                                                                                        | Cuándo actúa                                  | Qué garantiza                                                                                                            |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 1. Validación de parámetros                   | `Parameters` con `AllowedValues`: `Stage` ∈ {`dev`, `demo`, `prod`}, `EnableWaf` ∈ {`true`, `false`}                                                                             | Al crear/actualizar el stack o un change set  | Rechaza valores fuera de lista. Por sí sola no puede relacionar dos parámetros                                           |
+| 2. Aserción de CloudFormation                 | Sección `Rules`: regla `ProdRequiresWaf` con `RuleCondition: Stage = prod` y `Assertions: EnableWaf = true` (junto a `ProdForbidsMockSms`)                                       | Antes de crear o actualizar cualquier recurso | `Stage=prod` + `EnableWaf=false` falla la operación y no se toca ningún recurso                                          |
+| 3. Condición de CloudFormation                | `Conditions: CreateWaf = Or(Equals(Stage, prod), Equals(EnableWaf, true))`, aplicada a `WebACL` y `WebACLAssociation`                                                            | Al evaluar la plantilla                       | En `prod` los recursos WAF se crean **aunque** el parámetro cambiara, incluso si alguien eliminara la regla de la capa 2 |
+| 4. Política de despliegue (futura)            | `samconfig.toml` del entorno `prod` sin override de `EnableWaf`; en CI, `cfn-lint`, checkov y una prueba de plantilla que verifique las capas 2 y 3                              | En cada PR                                    | Un cambio que debilite la plantilla no pasa revisión                                                                     |
+| 5. Detección (futura, en la cuenta de `prod`) | Regla administrada de AWS Config `api-gw-associated-with-waf`, con alarma. Opcional: SCP que niegue `wafv2:DisassociateWebACL` y `wafv2:DeleteWebACL` salvo al rol de despliegue | Continua, después del despliegue              | Detecta (y con SCP, impide) desasociaciones manuales desde la consola, que CloudFormation no ve                          |
+
+- La compatibilidad de la sección `Rules` con la transformación de SAM se verificará con `sam validate` y `cfn-lint` en la etapa 1.
+- **Límite:** un administrador con privilegios suficientes puede editar la plantilla o la cuenta. Las capas 4 y 5 hacen que ese cambio sea visible y revisable, igual que en [ADR-0004](adr/0004-auditlog-append-only.md).
+
+#### 1.2.2 Costos y alcance
+
+- **Nada de esto está desplegado ni existe en AWS.** En la etapa 0 solo hay documentación. El Web ACL, sus reglas y la asociación con el stage de API Gateway son infraestructura **futura**: se definirán en `template.yaml` en la etapa 1 y solo se desplegarán con aprobación explícita.
+- **AWS WAF tiene costo adicional** al de API Gateway. Precios de lista publicados por AWS al redactar este documento (sujetos a cambio; se recalcularán con AWS Pricing Calculator antes de desplegar):
+
+| Concepto                   | Precio de lista         | Propuesta (1 Web ACL, 3 grupos administrados, 3 reglas rate-based) |
+| -------------------------- | ----------------------- | ------------------------------------------------------------------ |
+| Web ACL                    | USD 5.00 / mes          | USD 5.00 / mes                                                     |
+| Regla o grupo de reglas    | USD 1.00 / mes cada uno | 6 × USD 1.00 = USD 6.00 / mes                                      |
+| Solicitudes inspeccionadas | USD 0.60 / millón       | Variable                                                           |
+
+- Costo fijo estimado: **≈ USD 11 / mes por entorno con WAF**, más solicitudes. No incluye logs de WAF (CloudWatch Logs se cobra aparte) ni grupos de pago como Bot Control, que no se proponen.
+- Por eso `EnableWaf` existe: `dev`/`demo` pueden omitir WAF para ahorrar costo, con la limitación documentada en 1.2.
 
 Reglas propuestas (en orden de prioridad):
 
@@ -66,28 +95,80 @@ Notas:
 
 ### 1.3 Límite por paciente (sin tabla adicional)
 
-Atributos en el ítem de `Patients`: `pinWindowStartsAt` (epoch s) y `pinRequestCount` (N). Límite inicial: **5 SMS por paciente por hora**, sumando solicitudes y reenvíos.
+Límite inicial: **5 SMS por paciente por hora**, sumando solicitudes (`request`) y reenvíos (`resend`) en un **único contador**. Atributos en el ítem de `Patients`:
 
-Cada emisión de PIN, en `requestAccess` y en `resendPin` para retos reales, ejecuta antes de enviar el SMS:
+- `pinWindowStartsAt` (epoch s): inicio de la ventana vigente.
+- `pinRequestCount` (N): emisiones dentro de esa ventana.
+
+#### Ventana horaria y reinicio
+
+- **Ventana fija de 3600 s anclada a la primera emisión**: empieza con la primera emisión y dura hasta `pinWindowStartsAt + 3600`.
+- **Reinicio perezoso:** no hay tarea programada ni TTL. La primera emisión con `now >= pinWindowStartsAt + 3600` abre una ventana nueva (`pinWindowStartsAt = now`, `pinRequestCount = 1`). Si no llegan más solicitudes, los atributos viejos no tienen efecto.
+- **Cota real:** cada ventana permite como máximo 5. En el borde entre dos ventanas puede haber hasta 9 emisiones en 60 minutos móviles (4 al final de una ventana y 5 al inicio de la siguiente). Se acepta para el MVP; si EIRA requiere ventana deslizante estricta, se guardarían las últimas 5 marcas de tiempo con control de versión optimista, en el mismo ítem.
+- `:now` es el reloj de la Lambda; una desviación de segundos solo desplaza el borde de la ventana.
+
+#### Algoritmo atómico
+
+Cada emisión de PIN para un reto real ejecuta:
 
 ```text
-// Intento A: abrir una ventana nueva si no existe o ya venció
-UpdateItem Patients { patientId }
-  SET pinWindowStartsAt = :now, pinRequestCount = :one
-  CONDITION attribute_not_exists(pinWindowStartsAt) OR pinWindowStartsAt <= :now_minus_3600
+1. GetItem Patients { patientId } ConsistentRead
+     (proyección: pinWindowStartsAt, pinRequestCount)
 
-// Si A falla con ConditionalCheckFailed → Intento B: consumir cupo en la ventana vigente
-UpdateItem Patients { patientId }
-  ADD pinRequestCount :one
-  CONDITION pinWindowStartsAt > :now_minus_3600 AND pinRequestCount < :max   // :max = 5
+2. Elegir la actualización del contador:
+   si no hay ventana o pinWindowStartsAt <= :now - 3600:      // abrir ventana
+     U = Update Patients { patientId }
+           SET pinWindowStartsAt = :now, pinRequestCount = :one
+           CONDITION attribute_not_exists(pinWindowStartsAt)
+                     OR pinWindowStartsAt <= :now_minus_3600
+   si no, si pinRequestCount < 5:                             // consumir cupo
+     U = Update Patients { patientId }
+           ADD pinRequestCount :one
+           CONDITION pinWindowStartsAt > :now_minus_3600
+                     AND pinRequestCount < :max               // :max = 5
+   si no:
+     límite alcanzado → paso 5
 
-// Si B también falla → límite alcanzado
+3. TransactWriteItems [ U, C ]
+     C = Put PinChallenges (request; CONDITION attribute_not_exists(challengeId))
+         o Update PinChallenges (resend; condiciones de 5.2)
+
+4. Si la transacción se cancela:
+     - ConditionalCheckFailed en Patients (otra solicitud cambió el contador)
+       → volver al paso 1 (máximo 3 intentos en total)
+     - TransactionConflict → reintento con backoff y jitter (dentro de los mismos 3)
+     - ConditionalCheckFailed en PinChallenges (resend en enfriamiento, vencido, etc.)
+       → error genérico de resend; el contador no cambia, porque la transacción no se aplicó
+
+5. Límite alcanzado o reintentos agotados → no se genera PIN real ni se envía SMS.
+   Se crea un reto señuelo, la respuesta es idéntica (202) y se audita PIN_RATE_LIMITED.
+
+6. El SMS se envía solo después de que la transacción se confirma.
 ```
 
-- Ambas operaciones son atómicas. Con solicitudes concurrentes, como máximo `:max` llegan a enviar SMS por ventana.
-- **Límite alcanzado:** no se genera PIN real ni se envía SMS. Se crea un **reto señuelo** y la respuesta es idéntica (`202`); solo se audita `PIN_RATE_LIMITED`. No se responde `429`, porque eso revelaría que el expediente existe.
-- **IAM:** el rol solo puede actualizar esos dos atributos (condición `dynamodb:Attributes` con `ForAllValues:StringEquals` y `dynamodb:ReturnValues` = `NONE`).
-- **Cota de fuerza bruta por expediente:** 5 emisiones por hora × 5 intentos por reto = 25 intentos por hora, es decir, una probabilidad de acierto ≤ 25 / 10⁶ por hora y por expediente, además de los límites por IP.
+#### Por qué no se puede superar el límite
+
+- DynamoDB evalúa la condición y aplica la escritura de forma **atómica y serializada sobre el mismo ítem**. El paso 1 es solo una pista para elegir la expresión; la garantía la dan las `CONDITION` del paso 2.
+- **Consumir cupo:** con `pinRequestCount = 4`, de N escrituras concurrentes solo una ve `4 < 5` y deja el contador en 5. Las demás ven 5 y fallan. El contador nunca pasa de 5 dentro de una ventana.
+- **Abrir ventana:** si varias solicitudes llegan justo al vencer la ventana, solo una abre la nueva. Para las demás, `pinWindowStartsAt` ya es reciente, su condición falla y reintentan como "consumir cupo".
+- **Solicitudes y reenvíos** actualizan el mismo atributo del mismo ítem, así que compiten por el mismo cupo.
+- **Contador y reto en una sola transacción:** no puede existir un reto real (ni su SMS) sin cupo consumido, ni cupo consumido sin reto. Única excepción: si falla el envío del SMS después de confirmar, el cupo **no se devuelve** (falla en el lado seguro).
+- Los retos señuelo no tocan ningún contador, porque no tienen expediente.
+
+#### Otras reglas
+
+- **Sin `429`:** al alcanzar el límite no se responde `429`, porque eso revelaría que el expediente existe.
+- **IAM:** el rol solo puede actualizar esos dos atributos en `Patients` (condición `dynamodb:Attributes` con `ForAllValues:StringEquals` y `dynamodb:ReturnValues` = `NONE`). `TransactWriteItems` evalúa los permisos de `UpdateItem`/`PutItem` de cada elemento.
+- **Cota de fuerza bruta por expediente:** 5 emisiones por ventana × 5 intentos por reto = 25 intentos por ventana, es decir, una probabilidad de acierto ≤ 25 / 10⁶ por ventana y por expediente, además de los límites por IP.
+
+#### Pruebas previstas (etapa 3, DynamoDB Local y reloj simulado)
+
+- 20 `request` concurrentes para un expediente → exactamente 5 retos reales, 5 SMS en el mock y `pinRequestCount == 5`.
+- 10 `request` y 10 `resend` concurrentes → como máximo 5 emisiones en total.
+- En `start + 3599` se rechaza; en `start + 3600` se abre una ventana nueva con `pinRequestCount == 1`.
+- Varias solicitudes concurrentes en el borde de la ventana → una sola apertura y como máximo 5 emisiones en la ventana nueva.
+- Un `resend` rechazado por enfriamiento no consume cupo.
+- Si falla el SMS, el contador no disminuye.
 
 ---
 
@@ -223,12 +304,12 @@ UpdateItem PinChallenges { challengeId }
             AND resendAvailableAt <= :now AND resendCount < :maxResends
 ```
 
-En retos reales, antes de enviar el SMS se aplica también el límite por paciente (sección 1.3). `attempts` no se modifica.
+En retos reales, este `Update` va en la misma `TransactWriteItems` que el contador por paciente (sección 1.3), así que un reenvío rechazado no consume cupo. `attempts` no se modifica.
 
 ### 5.3 `requestAccess`
 
 - `PutItem PinChallenges` con `CONDITION attribute_not_exists(challengeId)`.
-- En retos reales, actualización condicional del contador por paciente (sección 1.3).
+- En retos reales, este `Put` va en la misma `TransactWriteItems` que el contador por paciente (sección 1.3).
 
 ### 5.4 Sesiones
 
@@ -244,4 +325,4 @@ En retos reales, antes de enviar el SMS se aplica también el límite por pacien
 - 20 `verify` incorrectos en paralelo → `attempts == 5`.
 - 10 `verify` correctos en paralelo → exactamente 1 sesión.
 - `verify` correcto concurrente con `resend` → nunca valida el PIN anterior después del reenvío.
-- N `request` concurrentes para un expediente → como máximo 5 SMS por hora.
+- Concurrencia del límite por paciente: ver las pruebas de la sección 1.3.
