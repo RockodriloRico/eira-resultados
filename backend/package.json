@@ -1,0 +1,14 @@
+{
+  "name": "@eira/backend",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Funciones AWS Lambda (Node.js 24, TypeScript).",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@eira/shared": "0.0.0"
+  }
+}
