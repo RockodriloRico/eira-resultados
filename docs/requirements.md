@@ -2,7 +2,7 @@
 
 | Herramienta   | Versión                                   | Desde la etapa | Uso                                                                             |
 | ------------- | ----------------------------------------- | -------------- | ------------------------------------------------------------------------------- |
-| Node.js       | **24.x LTS** (≥ 24.11.0, `.nvmrc` = `24`) | 0              | Desarrollo, pruebas y build. Coincide con el runtime `nodejs24.x` de AWS Lambda |
+| Node.js       | **24.x LTS** (≥ 24.15.0, `.nvmrc` = `24`) | 0              | Desarrollo, pruebas y build. Coincide con el runtime `nodejs24.x` de AWS Lambda |
 | npm           | ≥ 11 (incluido con Node 24)               | 0              | npm workspaces y `package-lock.json`                                            |
 | AWS SAM CLI   | ≥ 1.174.0                                 | 1              | `sam validate --lint`, `sam build`, `sam local` (**sin** `sam deploy`)          |
 | Docker        | Engine reciente                           | 1              | `sam local start-api` y DynamoDB Local                                          |
