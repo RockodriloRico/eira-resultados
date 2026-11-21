@@ -20,8 +20,8 @@ Principio: **cada tabla existe porque tiene un patrón de acceso, un ciclo de vi
 
 La propuesta inicial tenía seis tablas. Al revisarla contra los patrones de acceso, **`RateLimits` no aporta valor suficiente al MVP** y se elimina:
 
-- **Límite por IP:** lo cubren el throttling por método de API Gateway y, opcionalmente, una regla rate-based de AWS WAF. No requiere estado propio.
-- **Límite por paciente (AP2):** se guarda en el propio ítem de `Patients` (`pinRequestCount`, `pinWindowStartsAt`) con una actualización condicional atómica. La Lambda solo puede escribir esos atributos (condición IAM `dynamodb:Attributes`).
+- **Límite por IP:** lo cubren las reglas rate-based de AWS WAF, incluidas en la plantilla y obligatorias en `prod`. El throttling de API Gateway limita el volumen agregado, no por IP. Ninguno requiere estado propio ([security-design.md §1](security-design.md#1-limitación-de-tasa), [ADR-0008](adr/0008-limitacion-de-tasa.md)).
+- **Límite por paciente (AP2):** se guarda en el propio ítem de `Patients` (`pinRequestCount`, `pinWindowStartsAt`) con una actualización condicional atómica. La Lambda solo puede escribir esos atributos (condición IAM `dynamodb:Attributes`). Expresiones exactas en [security-design.md §1.3](security-design.md#13-límite-por-paciente-sin-tabla-adicional).
 - **Retos señuelo** (datos no coincidentes): no envían SMS y caducan solos, así que el throttling de API Gateway es suficiente.
 
 ### Tablas resultantes
@@ -53,4 +53,50 @@ La propuesta inicial tenía seis tablas. Al revisarla contra los patrones de acc
 - Cifrado con CMK de KMS, PITR (excepto en tablas solo con datos efímeros, donde aporta poco), modo on-demand y `DeletionProtection` en `prod`.
 - Nunca se guardan en claro: PIN, token de sesión, folio, nombre ni fecha de nacimiento (solo HMAC). El teléfono es necesario para el SMS y se protege con el cifrado de la tabla y con IAM.
 
-El detalle de atributos se define en la etapa 1 junto con `template.yaml`.
+## Atributos relevantes para los controles
+
+| Tabla            | Atributos                                                                                                                                                  | Uso                                                    |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `Patients`       | `folioHash`, `nameHash`, `birthDateHash`, `status`, `dataClassification` (`SYNTHETIC` obligatorio en `demo`), `pinWindowStartsAt`, `pinRequestCount`       | Verificación, límite por paciente, guarda de `demoPin` |
+| `PinChallenges`  | `challengeId`, `kind` (`REAL`/`DECOY`), `patientId` (solo `REAL`), `pinHmac`, `attempts`, `resendCount`, `status`, `expiresAt`, `resendAvailableAt`, `ttl` | Reto, señuelos, expiración y concurrencia              |
+| `AccessSessions` | `tokenHash`, `patientId`, `expiresAt`, `revoked`, `ttl`                                                                                                    | Sesión opaca revocable                                 |
+
+`expiresAt` es la fuente de verdad de la expiración y `ttl` solo sirve de limpieza ([security-design.md §3](security-design.md#3-expiración)).
+
+## AuditLog: claves, índices y consultas
+
+### Claves
+
+| Atributo             | Valor                                                                                                                                                                                                                                     | Propósito                                     |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `pk` (partition key) | `PATIENT#{patientId}` si el evento se relaciona con un expediente conocido (incluidas las acciones administrativas sobre ese expediente); `ANON#{YYYY-MM-DD}` para eventos sin expediente asociado (datos no coincidentes, retos señuelo) | Consulta por paciente                         |
+| `sk` (sort key)      | `{occurredAt ISO-8601 UTC}#{eventId}` (`eventId` = UUID v4)                                                                                                                                                                               | Orden cronológico, rangos de fecha y unicidad |
+| `eventType`          | p. ej. `PIN_VERIFY_FAIL`                                                                                                                                                                                                                  | Partition key del GSI                         |
+
+**GSI `EventTypeIndex`**: partition key `eventType`, sort key `sk`, proyección `ALL`.
+
+### Consultas (AP8)
+
+| Consulta                            | Operación                                                                                    |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| Eventos de una paciente en un rango | `Query` tabla: `pk = :PATIENT#id AND sk BETWEEN :desde AND :hasta`, `ScanIndexForward=false` |
+| Eventos de un tipo en un rango      | `Query` `EventTypeIndex`: `eventType = :tipo AND sk BETWEEN :desde AND :hasta`               |
+| Eventos sin expediente de un día    | `Query` tabla: `pk = :ANON#fecha`                                                            |
+
+- La API admin (`GET /v1/admin/audit?patientId=…|eventType=…&from=…&to=…`) exige exactamente un filtro, un rango máximo de 31 días y un límite de 100 por página. La paginación usa un cursor opaco derivado de `LastEvaluatedKey`.
+- No hay `Scan`.
+- Volumen del MVP: una partición por `eventType` es suficiente. Si creciera, el GSI puede particionarse como `eventType#YYYY-MM` sin cambiar la tabla base.
+- La consulta por administrador (`actorId`) queda fuera del MVP; se agregaría como GSI si se requiere.
+
+### Atributos de cada evento
+
+`eventId`, `eventType`, `outcome` (`SUCCESS`/`FAILURE`), `reasonCode` (p. ej. `EXPIRED`, `LOCKED`, `MISMATCH`, `RATE_LIMITED`), `occurredAt`, `actorType` (`PATIENT`/`ADMIN`/`SYSTEM`), `actorId` (`sub` de Cognito para admin; vacío para paciente), `patientId?`, `challengeId?`, `resultId?`, `requestId` (API Gateway), `sourceIpHash` y `userAgentHash` (HMAC con pepper).
+
+**Nunca:** PIN, `demoPin`, token, nombre, fecha de nacimiento, folio ni teléfono.
+
+### Escritura
+
+- `PutItem` con `attribute_not_exists(pk)`: append-only, ver [ADR-0004](adr/0004-auditlog-append-only.md).
+- **Fail-closed en eventos que conceden acceso:** `SESSION_CREATED` se escribe dentro de la misma transacción que consume el PIN, y `DOWNLOAD_URL_ISSUED` se escribe antes de firmar la URL. Si falla, no se concede el acceso.
+- Los eventos de fallo se escriben en modo best-effort, con métrica `AuditWriteFailed` y alarma.
+- Retención: sin TTL en el MVP; la política de retención la definirá EIRA.

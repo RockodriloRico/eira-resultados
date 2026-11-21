@@ -17,7 +17,9 @@ Infraestructura como código con **AWS SAM** (región prevista: `us-east-1`).
 
 ## Reglas que la plantilla debe hacer cumplir
 
-- `Rules`: la combinación `Stage=prod` + `SmsProvider=mock` hace fallar la plantilla (y con ella el campo `demoPin`).
+- `Rules`: la combinación `Stage=prod` + `SmsProvider=mock` hace fallar la plantilla (y con ella el campo `demoPin`); `Stage=prod` exige `EnableWaf=true`.
+- AWS WAF (`AWS::WAFv2::WebACL` regional) asociado al stage de la API, con reglas administradas y rate-based por IP ([security-design.md §1.2](../docs/security-design.md#12-aws-waf-incluido-en-la-plantilla-sam)).
+- API Gateway con throttling por método, `DataTraceEnabled: false` y access logs sin cuerpos.
 - Buckets con Block Public Access, SSE-KMS, TLS obligatorio y acceso solo desde roles autorizados o CloudFront (OAC).
 - Un rol IAM por función, con acciones y ARNs concretos.
 - `AuditLog` sin permisos `UpdateItem`/`DeleteItem` para ningún rol de aplicación (ver [ADR-0004](../docs/adr/0004-auditlog-append-only.md)).

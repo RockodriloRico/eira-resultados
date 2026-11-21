@@ -52,6 +52,8 @@ Los valores del flujo están centralizados en `packages/shared/src/securityPolic
 
 ## Controles de seguridad clave
 
+Diseño detallado (limitación de tasa, anti-enumeración, expiración, `demoPin` y concurrencia): [security-design.md](security-design.md).
+
 - **Sin texto plano:** ni el PIN, ni el token de sesión, ni los secretos se almacenan o registran en claro. Los secretos HMAC viven en Secrets Manager.
 - **`demoPin`:** solo existe con `Stage=demo` y cuando el backend confirma en ejecución que usa `MockSmsProvider`. Nunca se guarda en DynamoDB ni aparece en logs. La plantilla SAM impide esta configuración en producción ([ADR-0003](adr/0003-demo-pin.md)).
 - **Documentos:** buckets privados, SSE-KMS, TLS obligatorio. El único camino de lectura es una URL firmada que emite el backend tras autorizar.
@@ -67,12 +69,13 @@ Los valores del flujo están centralizados en `packages/shared/src/securityPolic
 
 ## Decisiones
 
-| ADR                                              | Tema                                            |
-| ------------------------------------------------ | ----------------------------------------------- |
-| [0001](adr/0001-monorepo-npm-workspaces.md)      | Monorepo con npm workspaces y herramientas base |
-| [0002](adr/0002-api-rest-y-sesion-opaca.md)      | API REST y sesión de paciente con token opaco   |
-| [0003](adr/0003-demo-pin.md)                     | Política de `demoPin`                           |
-| [0004](adr/0004-auditlog-append-only.md)         | AuditLog append-only (alcance y límites)        |
-| [0005](adr/0005-tablas-dynamodb.md)              | Tablas DynamoDB según patrones de acceso        |
-| [0006](adr/0006-cognito-pkce.md)                 | Cognito con Authorization Code Flow + PKCE      |
-| [0007](adr/0007-frontend-hosting-css-modules.md) | Hosting S3 + CloudFront OAC y CSS Modules       |
+| ADR                                              | Tema                                                       |
+| ------------------------------------------------ | ---------------------------------------------------------- |
+| [0001](adr/0001-monorepo-npm-workspaces.md)      | Monorepo con npm workspaces y herramientas base            |
+| [0002](adr/0002-api-rest-y-sesion-opaca.md)      | API REST y sesión de paciente con token opaco              |
+| [0003](adr/0003-demo-pin.md)                     | Política de `demoPin`                                      |
+| [0004](adr/0004-auditlog-append-only.md)         | AuditLog append-only (alcance y límites)                   |
+| [0005](adr/0005-tablas-dynamodb.md)              | Tablas DynamoDB según patrones de acceso                   |
+| [0006](adr/0006-cognito-pkce.md)                 | Cognito con Authorization Code Flow + PKCE                 |
+| [0007](adr/0007-frontend-hosting-css-modules.md) | Hosting S3 + CloudFront OAC y CSS Modules                  |
+| [0008](adr/0008-limitacion-de-tasa.md)           | Limitación de tasa: API Gateway, WAF y límite por paciente |
