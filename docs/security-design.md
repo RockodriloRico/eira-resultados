@@ -64,7 +64,7 @@ Son controles de **infraestructura y despliegue**, no reglas de AWS WAF: una reg
 #### 1.2.2 Costos y alcance
 
 - **Nada de esto está desplegado ni existe en AWS.** En la etapa 0 solo hay documentación. El Web ACL, sus reglas y la asociación con el stage de API Gateway son infraestructura **futura**: se definirán en `template.yaml` en la etapa 1 y solo se desplegarán con aprobación explícita.
-- **AWS WAF tiene costo adicional** al de API Gateway. Precios de lista publicados por AWS al redactar este documento (sujetos a cambio; se recalcularán con AWS Pricing Calculator antes de desplegar):
+- **AWS WAF tiene costo adicional** al de API Gateway. Precios de lista publicados por AWS al redactar este documento. Son **aproximados**: dependen de la región, del número de reglas y grupos, del volumen de solicitudes y de los cambios de precio de AWS. Se recalcularán con AWS Pricing Calculator para `us-east-1` antes de desplegar.
 
 | Concepto                   | Precio de lista         | Propuesta (1 Web ACL, 3 grupos administrados, 3 reglas rate-based) |
 | -------------------------- | ----------------------- | ------------------------------------------------------------------ |
@@ -72,7 +72,7 @@ Son controles de **infraestructura y despliegue**, no reglas de AWS WAF: una reg
 | Regla o grupo de reglas    | USD 1.00 / mes cada uno | 6 × USD 1.00 = USD 6.00 / mes                                      |
 | Solicitudes inspeccionadas | USD 0.60 / millón       | Variable                                                           |
 
-- Costo fijo estimado: **≈ USD 11 / mes por entorno con WAF**, más solicitudes. No incluye logs de WAF (CloudWatch Logs se cobra aparte) ni grupos de pago como Bot Control, que no se proponen.
+- Costo fijo **aproximado**: **≈ USD 11 / mes por entorno con WAF**, más el costo variable por solicitudes. No incluye logs de WAF (CloudWatch Logs se cobra aparte) ni grupos de pago como Bot Control, que no se proponen.
 - Por eso `EnableWaf` existe: `dev`/`demo` pueden omitir WAF para ahorrar costo, con la limitación documentada en 1.2.
 
 Reglas propuestas (en orden de prioridad):
@@ -102,9 +102,13 @@ Límite inicial: **5 SMS por paciente por hora**, sumando solicitudes (`request`
 
 #### Ventana horaria y reinicio
 
-- **Ventana fija de 3600 s anclada a la primera emisión**: empieza con la primera emisión y dura hasta `pinWindowStartsAt + 3600`.
+- **El MVP usa ventanas fijas, no una ventana deslizante estricta.** Cada ventana dura 3600 s, empieza con la primera emisión y termina en `pinWindowStartsAt + 3600`.
 - **Reinicio perezoso:** no hay tarea programada ni TTL. La primera emisión con `now >= pinWindowStartsAt + 3600` abre una ventana nueva (`pinWindowStartsAt = now`, `pinRequestCount = 1`). Si no llegan más solicitudes, los atributos viejos no tienen efecto.
-- **Cota real:** cada ventana permite como máximo 5. En el borde entre dos ventanas puede haber hasta 9 emisiones en 60 minutos móviles (4 al final de una ventana y 5 al inicio de la siguiente). Se acepta para el MVP; si EIRA requiere ventana deslizante estricta, se guardarían las últimas 5 marcas de tiempo con control de versión optimista, en el mismo ítem.
+- **Cota real:**
+  - Cada ventana fija permite como máximo 5 emisiones.
+  - En cualquier período móvil de 60 minutos pueden ocurrir **hasta 10 emisiones (2 × 5)**, si se concentran al final de una ventana y al inicio de la siguiente. Por ejemplo: 1 en `t0`, 4 en `t0 + 3599` y 5 en `t0 + 3600`.
+  - Lo garantizado es "≤ 5 por ventana fija", no "≤ 5 en cualquier hora móvil".
+  - Se acepta para el MVP. Si EIRA requiere una ventana deslizante estricta, se guardarían las últimas 5 marcas de tiempo en el mismo ítem, con control de versión optimista. Eso queda fuera del alcance actual.
 - `:now` es el reloj de la Lambda; una desviación de segundos solo desplaza el borde de la ventana.
 
 #### Algoritmo atómico
@@ -149,8 +153,14 @@ Cada emisión de PIN para un reto real ejecuta:
 #### Por qué no se puede superar el límite
 
 - DynamoDB evalúa la condición y aplica la escritura de forma **atómica y serializada sobre el mismo ítem**. El paso 1 es solo una pista para elegir la expresión; la garantía la dan las `CONDITION` del paso 2.
-- **Consumir cupo:** con `pinRequestCount = 4`, de N escrituras concurrentes solo una ve `4 < 5` y deja el contador en 5. Las demás ven 5 y fallan. El contador nunca pasa de 5 dentro de una ventana.
-- **Abrir ventana:** si varias solicitudes llegan justo al vencer la ventana, solo una abre la nueva. Para las demás, `pinWindowStartsAt` ya es reciente, su condición falla y reintentan como "consumir cupo".
+- **Consumir cupo:** condición atómica `pinWindowStartsAt > :now_minus_3600 AND pinRequestCount < 5`.
+  - Con `pinRequestCount = 4`, de N escrituras concurrentes solo una ve `4 < 5` y deja el contador en 5. Las demás ven 5 y fallan.
+  - Una escritura que llega cuando la ventana ya venció también falla, por la primera mitad de la condición. Así no se consume cupo de una ventana vencida.
+  - El contador nunca pasa de 5 dentro de una ventana.
+- **Abrir ventana:** condición atómica `attribute_not_exists(pinWindowStartsAt) OR pinWindowStartsAt <= :now_minus_3600`.
+  - Si dos o más solicitudes concurrentes intentan abrir una ventana nueva, DynamoDB serializa las escrituras sobre el ítem. Solo la primera ve la ventana vencida y escribe `pinWindowStartsAt = :now`, `pinRequestCount = 1`.
+  - Para las siguientes, `pinWindowStartsAt` ya es reciente, así que su condición falla y no pueden reiniciar el contador a 1 ni borrar emisiones ya contadas. Reintentan (paso 4) como "consumir cupo".
+  - Una solicitud que leyó un estado viejo en el paso 1 tampoco puede actuar sobre él, porque la condición se evalúa contra el estado actual del ítem en el momento de escribir.
 - **Solicitudes y reenvíos** actualizan el mismo atributo del mismo ítem, así que compiten por el mismo cupo.
 - **Contador y reto en una sola transacción:** no puede existir un reto real (ni su SMS) sin cupo consumido, ni cupo consumido sin reto. Única excepción: si falla el envío del SMS después de confirmar, el cupo **no se devuelve** (falla en el lado seguro).
 - Los retos señuelo no tocan ningún contador, porque no tienen expediente.
@@ -166,7 +176,8 @@ Cada emisión de PIN para un reto real ejecuta:
 - 20 `request` concurrentes para un expediente → exactamente 5 retos reales, 5 SMS en el mock y `pinRequestCount == 5`.
 - 10 `request` y 10 `resend` concurrentes → como máximo 5 emisiones en total.
 - En `start + 3599` se rechaza; en `start + 3600` se abre una ventana nueva con `pinRequestCount == 1`.
-- Varias solicitudes concurrentes en el borde de la ventana → una sola apertura y como máximo 5 emisiones en la ventana nueva.
+- Varias solicitudes concurrentes en el borde de la ventana → una sola apertura, ningún reinicio adicional del contador y como máximo 5 emisiones en la ventana nueva.
+- 5 emisiones al final de una ventana y 5 al inicio de la siguiente → se permiten las 10 (comportamiento esperado de la ventana fija), y la emisión 11 se rechaza.
 - Un `resend` rechazado por enfriamiento no consume cupo.
 - Si falla el SMS, el contador no disminuye.
 

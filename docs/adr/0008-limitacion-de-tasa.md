@@ -22,6 +22,7 @@ El throttling de API Gateway es agregado para todas las clientas: protege la cap
 - **Límite por paciente:** 5 SMS por ventana fija de 1 hora, con un único contador para solicitudes y reenvíos en el ítem de `Patients`.
   - El contador y el reto se escriben en una sola `TransactWriteItems` con condiciones, así que no se puede superar el límite bajo concurrencia.
   - La ventana se reinicia de forma perezosa en la primera emisión después de 3600 s.
+  - El MVP usa **ventanas fijas**, no una ventana deslizante estricta: garantiza ≤ 5 por ventana, pero en 60 minutos móviles pueden ocurrir hasta 10 (5 al final de una ventana y 5 al inicio de la siguiente).
   - Al alcanzarlo, la respuesta es la misma que la de un señuelo (sin `429`, para no revelar existencia).
   - Detalle en [security-design.md §1.3](../security-design.md#13-límite-por-paciente-sin-tabla-adicional).
 - **Sin tabla `RateLimits`.**
@@ -30,6 +31,6 @@ El throttling de API Gateway es agregado para todas las clientas: protege la cap
 
 - Si `EnableWaf=false` (solo `dev`/`demo`), no hay limitación por IP en ese entorno. Queda documentado como limitación conocida del MVP.
 - **Alcance:** WAF y su asociación con API Gateway son infraestructura futura (etapa 1); nada está desplegado.
-- **Costo:** WAF agrega costo. Con precios de lista: USD 5 / mes por Web ACL + USD 1 / mes por regla o grupo + USD 0.60 por millón de solicitudes. Son ≈ USD 11 / mes fijos por entorno con la configuración propuesta, sin contar logs.
+- **Costo:** WAF agrega costo. Con precios de lista: USD 5 / mes por Web ACL + USD 1 / mes por regla o grupo + USD 0.60 por millón de solicitudes. Son ≈ USD 11 / mes fijos por entorno con la configuración propuesta, sin contar logs. Es una estimación aproximada: depende de la región, de las reglas y del volumen de solicitudes.
 - Los umbrales por IP deben ser conservadores por el CGNAT de redes móviles y se calibrarán con las métricas de WAF.
 - La detección rate-based de WAF tiene retraso (normalmente < 30 s según AWS) y su límite es aproximado; por eso el límite por paciente es el control determinista.
