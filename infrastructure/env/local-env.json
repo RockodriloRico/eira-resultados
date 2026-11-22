@@ -1,0 +1,17 @@
+{
+  "Parameters": {
+    "STAGE": "local",
+    "SMS_PROVIDER": "mock",
+    "DEMO_PIN_ENABLED": "false",
+    "CORS_ALLOWED_ORIGIN": "http://localhost:5173",
+    "AWS_ENDPOINT_URL_DYNAMODB": "http://host.docker.internal:8000",
+    "PATIENTS_TABLE": "eira-local-Patients",
+    "PIN_CHALLENGES_TABLE": "eira-local-PinChallenges",
+    "ACCESS_SESSIONS_TABLE": "eira-local-AccessSessions",
+    "RESULTS_TABLE": "eira-local-Results",
+    "AUDIT_LOG_TABLE": "eira-local-AuditLog",
+    "DOCUMENTS_BUCKET": "eira-local-documents-synthetic",
+    "IDENTITY_HMAC_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:eira/local/identity-hmac",
+    "PIN_HMAC_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:eira/local/pin-hmac"
+  }
+}

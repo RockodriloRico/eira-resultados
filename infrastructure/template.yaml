@@ -1,0 +1,2067 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  EIRA Resultados - infraestructura (etapa 1). Solo definición: este repositorio no despliega
+  ningún recurso sin aprobación explícita.
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [dev, demo, prod]
+    Description: Entorno. Cada entorno es un stack aislado.
+  SmsProvider:
+    Type: String
+    AllowedValues: [mock, sns]
+    Default: mock
+    Description: Proveedor de SMS. 'sns' es solo configuración futura; no hay integración real.
+  EnableWaf:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: Crea el Web ACL regional. En prod siempre se crea (Rules + Conditions).
+  CognitoDomainPrefix:
+    Type: String
+    AllowedPattern: '^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$'
+    Description: Prefijo del dominio de Cognito (globalmente único).
+  ManageApiGatewayAccountRole:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: >-
+      Crea AWS::ApiGateway::Account (ajuste único por cuenta y región) para los access logs.
+      Activar solo si la cuenta no tiene ya un rol de CloudWatch para API Gateway.
+
+Mappings:
+  StageConfig:
+    dev:
+      LogRetentionDays: 14
+      DeletionProtection: 'false'
+      CognitoDeletionProtection: INACTIVE
+      DataClassification: SYNTHETIC
+    demo:
+      LogRetentionDays: 30
+      DeletionProtection: 'false'
+      CognitoDeletionProtection: INACTIVE
+      DataClassification: SYNTHETIC
+    prod:
+      LogRetentionDays: 365
+      DeletionProtection: 'true'
+      CognitoDeletionProtection: ACTIVE
+      DataClassification: CONFIDENTIAL
+
+Rules:
+  ProdRequiresWaf:
+    RuleCondition: !Equals [!Ref Stage, prod]
+    Assertions:
+      - Assert: !Equals [!Ref EnableWaf, 'true']
+        AssertDescription: Stage=prod requiere EnableWaf=true
+  ProdForbidsMockSms:
+    RuleCondition: !Equals [!Ref Stage, prod]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref SmsProvider, mock]]
+        AssertDescription: Stage=prod no admite SmsProvider=mock
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+  IsDev: !Equals [!Ref Stage, dev]
+  CreateWaf: !Or [!Condition IsProd, !Equals [!Ref EnableWaf, 'true']]
+  ExposeDemoPin: !And [!Equals [!Ref Stage, demo], !Equals [!Ref SmsProvider, mock]]
+  CreateApiGatewayAccountRole: !Equals [!Ref ManageApiGatewayAccountRole, 'true']
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 10
+    CodeUri: ../backend/dist/
+    Handler: notImplemented.handler
+    LoggingConfig:
+      LogFormat: JSON
+      ApplicationLogLevel: INFO
+      SystemLogLevel: WARN
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+        NODE_OPTIONS: --enable-source-maps
+        CORS_ALLOWED_ORIGIN: !Sub https://${FrontendDistribution.DomainName}
+    Tags:
+      Project: eira-resultados
+      Stage: !Ref Stage
+
+Resources:
+  # ---------------------------------------------------------------- KMS
+  DataKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub EIRA ${Stage} - DynamoDB, Secrets Manager y CloudWatch Logs
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: CloudWatchLogsEncryption
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/eira-${Stage}-*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/eira-${Stage}-*
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+        - Key: Stage
+          Value: !Ref Stage
+
+  DataKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/eira-${Stage}-data
+      TargetKeyId: !Ref DataKey
+
+  DocumentsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub EIRA ${Stage} - documentos de resultados en S3
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: DecryptOnlyByDownloadRole
+            Effect: Deny
+            Principal:
+              AWS: '*'
+            Action: kms:Decrypt
+            Resource: '*'
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/eira-${Stage}-download-url
+          - Sid: GenerateDataKeyOnlyByAdminResultsRole
+            Effect: Deny
+            Principal:
+              AWS: '*'
+            Action: kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/eira-${Stage}-admin-results
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+        - Key: Stage
+          Value: !Ref Stage
+
+  DocumentsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/eira-${Stage}-documents
+      TargetKeyId: !Ref DocumentsKey
+
+  # ---------------------------------------------------------------- Secrets Manager
+  IdentityHmacSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV2_AWS_57
+            comment: Pepper de identidad; rotarlo invalida los HMAC almacenados (ADR-0009).
+    Properties:
+      Name: !Sub eira/${Stage}/identity-hmac
+      Description: Pepper HMAC para folio, nombre, fecha de nacimiento e IP. Generado por CloudFormation.
+      KmsKeyId: !Ref DataKey
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  PinHmacSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV2_AWS_57
+            comment: La rotación se definirá con la lógica del PIN (etapa 2); ver ADR-0009.
+    Properties:
+      Name: !Sub eira/${Stage}/pin-hmac
+      Description: Secreto HMAC del PIN. Generado por CloudFormation.
+      KmsKeyId: !Ref DataKey
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  # ---------------------------------------------------------------- DynamoDB (5 tablas)
+  PatientsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub eira-${Stage}-Patients
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: patientId
+          AttributeType: S
+        - AttributeName: folioHash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: patientId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: FolioHashIndex
+          KeySchema:
+            - AttributeName: folioHash
+              KeyType: HASH
+          Projection:
+            ProjectionType: KEYS_ONLY
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DataKey
+      DeletionProtectionEnabled: !FindInMap [StageConfig, !Ref Stage, DeletionProtection]
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+        - Key: DataClassification
+          Value: !FindInMap [StageConfig, !Ref Stage, DataClassification]
+
+  PinChallengesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_28
+            comment: Datos efímeros (5 min) que no se restauran; PITR no aporta valor.
+    Properties:
+      TableName: !Sub eira-${Stage}-PinChallenges
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: challengeId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: challengeId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DataKey
+      DeletionProtectionEnabled: !FindInMap [StageConfig, !Ref Stage, DeletionProtection]
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  AccessSessionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_28
+            comment: Sesiones efímeras (15 min) que no se restauran; PITR no aporta valor.
+    Properties:
+      TableName: !Sub eira-${Stage}-AccessSessions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tokenHash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tokenHash
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DataKey
+      DeletionProtectionEnabled: !FindInMap [StageConfig, !Ref Stage, DeletionProtection]
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  ResultsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub eira-${Stage}-Results
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: resultId
+          AttributeType: S
+        - AttributeName: patientId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: resultId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: PatientIndex
+          KeySchema:
+            - AttributeName: patientId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes: [resultType, status, sampleDate, availableAt]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DataKey
+      DeletionProtectionEnabled: !FindInMap [StageConfig, !Ref Stage, DeletionProtection]
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+        - Key: DataClassification
+          Value: !FindInMap [StageConfig, !Ref Stage, DataClassification]
+
+  AuditLogTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub eira-${Stage}-AuditLog
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: eventType
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: EventTypeIndex
+          KeySchema:
+            - AttributeName: eventType
+              KeyType: HASH
+            - AttributeName: sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DataKey
+      DeletionProtectionEnabled: !FindInMap [StageConfig, !Ref Stage, DeletionProtection]
+      ResourcePolicy:
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: AppendOnlyItems
+              Effect: Deny
+              Principal:
+                AWS: '*'
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:PartiQLInsert
+                - dynamodb:PartiQLUpdate
+                - dynamodb:PartiQLDelete
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/eira-${Stage}-AuditLog
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  # ---------------------------------------------------------------- S3: documentos
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Logs de acceso de S3 y eventos de datos de CloudTrail quedan fuera de la etapa 1 (decisión 8).
+          - id: CKV_AWS_144
+            comment: Replicación entre regiones fuera del alcance del MVP.
+          - id: CKV2_AWS_62
+            comment: Sin consumidores de eventos en el MVP.
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt DocumentsKey.Arn
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT]
+            AllowedOrigins:
+              - !Sub https://${FrontendDistribution.DomainName}
+            AllowedHeaders: [content-type, x-amz-*]
+            MaxAge: 300
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+        - Key: DataClassification
+          Value: !FindInMap [StageConfig, !Ref Stage, DataClassification]
+
+  DocumentsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DocumentsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DocumentsBucket.Arn
+              - !Sub ${DocumentsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyNonKmsEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DocumentsBucket.Arn}/*
+            Condition:
+              StringNotEqualsIfExists:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyOtherKmsKeys
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DocumentsBucket.Arn}/*
+            Condition:
+              StringNotEqualsIfExists:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt DocumentsKey.Arn
+          - Sid: ReadOnlyByDownloadRole
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource: !Sub ${DocumentsBucket.Arn}/*
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !GetAtt DownloadUrlRole.Arn
+          - Sid: WriteOnlyByAdminResultsRole
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DocumentsBucket.Arn}/*
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !GetAtt AdminResultsRole.Arn
+
+  # ---------------------------------------------------------------- S3 + CloudFront: frontend
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Logs de acceso fuera de la etapa 1 (decisión 8).
+          - id: CKV_AWS_144
+            comment: Replicación entre regiones fuera del alcance del MVP.
+          - id: CKV_AWS_145
+            comment: Activos estáticos públicos vía CloudFront; SSE-S3 (decisión 3). OAC con SSE-KMS exigiría permisos KMS a CloudFront sin beneficio.
+          - id: CKV2_AWS_62
+            comment: Sin consumidores de eventos en el MVP.
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt FrontendBucket.Arn
+              - !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: AllowCloudFrontOacRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}
+
+  FrontendOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub eira-${Stage}-frontend-oac
+        Description: Acceso de CloudFront al bucket privado del frontend
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendSecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub eira-${Stage}-security-headers
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: no-referrer
+            Override: true
+          ContentSecurityPolicy:
+            Override: true
+            ContentSecurityPolicy: !Sub >-
+              default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
+              connect-src 'self' https://*.execute-api.${AWS::Region}.amazonaws.com
+              https://*.auth.${AWS::Region}.amazoncognito.com https://cognito-idp.${AWS::Region}.amazonaws.com
+              https://*.s3.${AWS::Region}.amazonaws.com;
+              frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_68
+            comment: WAF en CloudFront fuera del MVP (decisión 9); solo sirve activos estáticos.
+          - id: CKV_AWS_86
+            comment: Logs de acceso de CloudFront fuera de la etapa 1 (decisión 8).
+          - id: CKV_AWS_174
+            comment: El certificado por defecto de CloudFront no permite fijar TLS mínimo; requiere dominio propio + ACM (decisión 9).
+          - id: CKV_AWS_310
+            comment: Grupo de orígenes con failover fuera del alcance del MVP.
+          - id: CKV_AWS_374
+            comment: Sin restricción geográfica; el servicio no limita por país.
+    Properties:
+      DistributionConfig:
+        Comment: !Sub EIRA Resultados ${Stage} - frontend
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: FrontendS3
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FrontendOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: FrontendS3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+          ResponseHeadersPolicyId: !Ref FrontendSecurityHeaders
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  # ---------------------------------------------------------------- Cognito (administración)
+  AdminUserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub eira-${Stage}-admins
+      UserPoolTier: ESSENTIALS
+      DeletionProtection: !FindInMap [StageConfig, !Ref Stage, CognitoDeletionProtection]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: 'ON'
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 14
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 3
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolTags:
+        Project: eira-resultados
+        Stage: !Ref Stage
+
+  AdminUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub eira-${Stage}-admin-spa
+      UserPoolId: !Ref AdminUserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: !If
+        - IsProd
+        - [!Sub 'https://${FrontendDistribution.DomainName}/admin/callback']
+        - [
+            !Sub 'https://${FrontendDistribution.DomainName}/admin/callback',
+            'http://localhost:5173/admin/callback',
+          ]
+      LogoutURLs: !If
+        - IsProd
+        - [!Sub 'https://${FrontendDistribution.DomainName}/admin']
+        - [!Sub 'https://${FrontendDistribution.DomainName}/admin', 'http://localhost:5173/admin']
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      AccessTokenValidity: 15
+      IdTokenValidity: 15
+      RefreshTokenValidity: 8
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: hours
+      AuthSessionValidity: 3
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+
+  AdminUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref AdminUserPool
+
+  AdminsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: admins
+      Description: Personal autorizado de EIRA
+      UserPoolId: !Ref AdminUserPool
+
+  # ---------------------------------------------------------------- IAM: un rol por función
+  AccessRequestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-access-request
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: access-request
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AccessRequestLogGroup.Arn
+              - Sid: FindPatientByFolio
+                Effect: Allow
+                Action: dynamodb:Query
+                Resource: !Sub ${PatientsTable.Arn}/index/FolioHashIndex
+              - Sid: ReadPatient
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt PatientsTable.Arn
+              - Sid: PatientRateLimitCounterOnly
+                Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt PatientsTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:Attributes: [patientId, pinWindowStartsAt, pinRequestCount]
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: [NONE, UPDATED_NEW]
+              - Sid: CreateChallenge
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt PinChallengesTable.Arn
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+              - Sid: ReadSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref IdentityHmacSecret, !Ref PinHmacSecret]
+              - Sid: DecryptSecrets
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+
+  AccessResendRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-access-resend
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: access-resend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AccessResendLogGroup.Arn
+              - Sid: ReadAndUpdateChallenge
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt PinChallengesTable.Arn
+              - Sid: ReadPatientContactFields
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt PatientsTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:Attributes:
+                      [
+                        patientId,
+                        phoneE164,
+                        status,
+                        dataClassification,
+                        pinWindowStartsAt,
+                        pinRequestCount,
+                      ]
+                  StringEquals:
+                    dynamodb:Select: SPECIFIC_ATTRIBUTES
+              - Sid: PatientRateLimitCounterOnly
+                Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt PatientsTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:Attributes: [patientId, pinWindowStartsAt, pinRequestCount]
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: [NONE, UPDATED_NEW]
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+              - Sid: ReadSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref PinHmacSecret
+              - Sid: DecryptSecrets
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+
+  AccessVerifyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-access-verify
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: access-verify
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AccessVerifyLogGroup.Arn
+              - Sid: ConsumeChallenge
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt PinChallengesTable.Arn
+              - Sid: CreateSession
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AccessSessionsTable.Arn
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+              - Sid: ReadSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref PinHmacSecret, !Ref IdentityHmacSecret]
+              - Sid: DecryptSecrets
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+
+  SessionAuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-session-authorizer
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: session-authorizer
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt SessionAuthorizerLogGroup.Arn
+              - Sid: ReadSession
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt AccessSessionsTable.Arn
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+
+  AccessLogoutRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-access-logout
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: access-logout
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AccessLogoutLogGroup.Arn
+              - Sid: RevokeSessionOnly
+                Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt AccessSessionsTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:Attributes: [tokenHash, revoked]
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+
+  ListResultsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-list-results
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: list-results
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt ListResultsLogGroup.Arn
+              - Sid: ListPatientResults
+                Effect: Allow
+                Action: dynamodb:Query
+                Resource: !Sub ${ResultsTable.Arn}/index/PatientIndex
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+
+  DownloadUrlRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-download-url
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: download-url
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt DownloadUrlLogGroup.Arn
+              - Sid: ReadResult
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt ResultsTable.Arn
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+              - Sid: SignDocumentDownload
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${DocumentsBucket.Arn}/results/*
+              - Sid: DecryptDocumentsViaS3
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt DocumentsKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
+
+  AdminPatientsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-admin-patients
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: admin-patients
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AdminPatientsLogGroup.Arn
+              - Sid: CreatePatient
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt PatientsTable.Arn
+              - Sid: CheckDuplicateFolio
+                Effect: Allow
+                Action: dynamodb:Query
+                Resource: !Sub ${PatientsTable.Arn}/index/FolioHashIndex
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+              - Sid: ReadSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref IdentityHmacSecret
+              - Sid: DecryptSecrets
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+
+  AdminResultsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-admin-results
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: admin-results
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AdminResultsLogGroup.Arn
+              - Sid: CreateResult
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt ResultsTable.Arn
+              - Sid: CheckPatientExists
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt PatientsTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:Attributes: [patientId, status]
+                  StringEquals:
+                    dynamodb:Select: SPECIFIC_ATTRIBUTES
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+              - Sid: SignDocumentUpload
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${DocumentsBucket.Arn}/results/*
+              - Sid: EncryptDocumentsViaS3
+                Effect: Allow
+                Action: kms:GenerateDataKey
+                Resource: !GetAtt DocumentsKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
+
+  AdminAuditRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-admin-audit
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: admin-audit
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AdminAuditLogGroup.Arn
+              - Sid: QueryAudit
+                Effect: Allow
+                Action: dynamodb:Query
+                Resource:
+                  - !GetAtt AuditLogTable.Arn
+                  - !Sub ${AuditLogTable.Arn}/index/EventTypeIndex
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Condition: CreateApiGatewayAccountRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Condition: CreateApiGatewayAccountRole
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  # ---------------------------------------------------------------- CloudWatch Logs
+  AccessRequestLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-access-request
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  AccessResendLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-access-resend
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  AccessVerifyLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-access-verify
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  SessionAuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-session-authorizer
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  AccessLogoutLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-access-logout
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  ListResultsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-list-results
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  DownloadUrlLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-download-url
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  AdminPatientsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-admin-patients
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  AdminResultsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-admin-results
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  AdminAuditLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-admin-audit
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/eira-${Stage}-access
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
+
+  # ---------------------------------------------------------------- Lambda (esqueletos sin lógica de negocio)
+  AccessRequestFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-access-request
+      Role: !GetAtt AccessRequestRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AccessRequestLogGroup
+      Environment:
+        Variables:
+          PATIENTS_TABLE: !Ref PatientsTable
+          PIN_CHALLENGES_TABLE: !Ref PinChallengesTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+          IDENTITY_HMAC_SECRET_ARN: !Ref IdentityHmacSecret
+          PIN_HMAC_SECRET_ARN: !Ref PinHmacSecret
+          SMS_PROVIDER: !Ref SmsProvider
+          DEMO_PIN_ENABLED: !If [ExposeDemoPin, 'true', 'false']
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/access/request
+            Method: post
+
+  AccessResendFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-access-resend
+      Role: !GetAtt AccessResendRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AccessResendLogGroup
+      Environment:
+        Variables:
+          PATIENTS_TABLE: !Ref PatientsTable
+          PIN_CHALLENGES_TABLE: !Ref PinChallengesTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+          PIN_HMAC_SECRET_ARN: !Ref PinHmacSecret
+          SMS_PROVIDER: !Ref SmsProvider
+          DEMO_PIN_ENABLED: !If [ExposeDemoPin, 'true', 'false']
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/access/resend
+            Method: post
+
+  AccessVerifyFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-access-verify
+      Role: !GetAtt AccessVerifyRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AccessVerifyLogGroup
+      Environment:
+        Variables:
+          PIN_CHALLENGES_TABLE: !Ref PinChallengesTable
+          ACCESS_SESSIONS_TABLE: !Ref AccessSessionsTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+          PIN_HMAC_SECRET_ARN: !Ref PinHmacSecret
+          IDENTITY_HMAC_SECRET_ARN: !Ref IdentityHmacSecret
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/access/verify
+            Method: post
+
+  AccessLogoutFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-access-logout
+      Role: !GetAtt AccessLogoutRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AccessLogoutLogGroup
+      Environment:
+        Variables:
+          ACCESS_SESSIONS_TABLE: !Ref AccessSessionsTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/access/logout
+            Method: post
+            Auth:
+              Authorizer: SessionAuthorizer
+
+  SessionAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-session-authorizer
+      Handler: denyAllAuthorizer.handler
+      Role: !GetAtt SessionAuthorizerRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref SessionAuthorizerLogGroup
+      Environment:
+        Variables:
+          ACCESS_SESSIONS_TABLE: !Ref AccessSessionsTable
+
+  ListResultsFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-list-results
+      Role: !GetAtt ListResultsRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref ListResultsLogGroup
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/results
+            Method: get
+            Auth:
+              Authorizer: SessionAuthorizer
+
+  DownloadUrlFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-download-url
+      Role: !GetAtt DownloadUrlRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref DownloadUrlLogGroup
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+          DOCUMENTS_BUCKET: !Ref DocumentsBucket
+          DOWNLOAD_URL_TTL_SECONDS: '60'
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/results/{resultId}/download-url
+            Method: post
+            Auth:
+              Authorizer: SessionAuthorizer
+
+  AdminPatientsFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-admin-patients
+      Role: !GetAtt AdminPatientsRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AdminPatientsLogGroup
+      Environment:
+        Variables:
+          PATIENTS_TABLE: !Ref PatientsTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+          IDENTITY_HMAC_SECRET_ARN: !Ref IdentityHmacSecret
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/patients
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+
+  AdminResultsFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-admin-results
+      Role: !GetAtt AdminResultsRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AdminResultsLogGroup
+      Environment:
+        Variables:
+          PATIENTS_TABLE: !Ref PatientsTable
+          RESULTS_TABLE: !Ref ResultsTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+          DOCUMENTS_BUCKET: !Ref DocumentsBucket
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/results
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+
+  AdminAuditFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-admin-audit
+      Role: !GetAtt AdminAuditRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AdminAuditLogGroup
+      Environment:
+        Variables:
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/audit
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+
+  # ---------------------------------------------------------------- API Gateway REST
+  EiraApi:
+    Type: AWS::Serverless::Api
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_120
+            comment: Respuestas sensibles con Cache-Control no-store; la caché de API no debe usarse.
+          - id: CKV_AWS_73
+            comment: X-Ray se evaluará en la etapa de observabilidad (decisión 11).
+          - id: CKV2_AWS_51
+            comment: Certificados de cliente no aplican a una API pública para pacientes.
+          - id: CKV2_AWS_29
+            comment: WAF se asocia con WebACLAssociation bajo la condición CreateWaf (obligatoria en prod).
+    Properties:
+      Name: !Sub eira-${Stage}-api
+      StageName: !Ref Stage
+      OpenApiVersion: '3.0.1'
+      EndpointConfiguration:
+        Type: REGIONAL
+      TracingEnabled: false
+      CacheClusterEnabled: false
+      Cors:
+        AllowOrigin: !Sub "'https://${FrontendDistribution.DomainName}'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Authorization,Content-Type'"
+        MaxAge: "'600'"
+      AccessLogSetting:
+        DestinationArn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApiAccessLogGroup}
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime",
+          "method":"$context.httpMethod","resource":"$context.resourcePath","status":"$context.status",
+          "latencyMs":"$context.responseLatency","responseLength":"$context.responseLength",
+          "wafStatus":"$context.waf.status","authorizerError":"$context.authorizer.error"}
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: 50
+          ThrottlingBurstLimit: 100
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1access~1request'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1access~1resend'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 5
+          ThrottlingBurstLimit: 10
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1access~1verify'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1access~1logout'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1results'
+          HttpMethod: 'GET'
+          ThrottlingRateLimit: 20
+          ThrottlingBurstLimit: 40
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1results~1{resultId}~1download-url'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 20
+          ThrottlingBurstLimit: 40
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1patients'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1results'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1audit'
+          HttpMethod: 'GET'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+      Auth:
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          SessionAuthorizer:
+            FunctionArn: !GetAtt SessionAuthorizerFunction.Arn
+            FunctionPayloadType: REQUEST
+            Identity:
+              Headers: [Authorization]
+              ReauthorizeEvery: 0
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt AdminUserPool.Arn
+            Identity:
+              Header: Authorization
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'https://${FrontendDistribution.DomainName}'"
+              Cache-Control: "'no-store'"
+          ResponseTemplates:
+            application/json: '{"message":"Solicitud no válida"}'
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'https://${FrontendDistribution.DomainName}'"
+              Cache-Control: "'no-store'"
+          ResponseTemplates:
+            application/json: '{"message":"Error interno"}'
+      Tags:
+        Project: eira-resultados
+        Stage: !Ref Stage
+
+  # ---------------------------------------------------------------- WAF regional (obligatorio en prod)
+  ApiWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Condition: CreateWaf
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV2_AWS_31
+            comment: Logs de WAF fuera de la etapa 1 por costo (decisión 8); métricas y muestras activas.
+    Properties:
+      Name: !Sub eira-${Stage}-api
+      Description: Managed rules and per-IP rate limits for the REST API
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      CustomResponseBodies:
+        TooManyRequests:
+          ContentType: APPLICATION_JSON
+          Content: '{"message":"Demasiadas solicitudes"}'
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub eira-${Stage}-api
+      Rules:
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 0
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesAmazonIpReputationList
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesKnownBadInputsRuleSet
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 2
+          OverrideAction: !If [IsDev, { Count: {} }, { None: {} }]
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesCommonRuleSet
+        - Name: AccessRequestPerIp
+          Priority: 3
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 429
+                CustomResponseBodyKey: TooManyRequests
+          Statement:
+            RateBasedStatement:
+              Limit: 20
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                OrStatement:
+                  Statements:
+                    - ByteMatchStatement:
+                        FieldToMatch:
+                          UriPath: {}
+                        PositionalConstraint: CONTAINS
+                        SearchString: /v1/access/request
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+                    - ByteMatchStatement:
+                        FieldToMatch:
+                          UriPath: {}
+                        PositionalConstraint: CONTAINS
+                        SearchString: /v1/access/resend
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AccessRequestPerIp
+        - Name: AccessVerifyPerIp
+          Priority: 4
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 429
+                CustomResponseBodyKey: TooManyRequests
+          Statement:
+            RateBasedStatement:
+              Limit: 30
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch:
+                    UriPath: {}
+                  PositionalConstraint: CONTAINS
+                  SearchString: /v1/access/verify
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AccessVerifyPerIp
+        - Name: GlobalPerIp
+          Priority: 5
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 429
+                CustomResponseBodyKey: TooManyRequests
+          Statement:
+            RateBasedStatement:
+              Limit: 500
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: GlobalPerIp
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  ApiWebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: CreateWaf
+    Properties:
+      ResourceArn: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${EiraApi}/stages/${EiraApi.Stage}
+      WebACLArn: !GetAtt ApiWebAcl.Arn
+
+Outputs:
+  ApiUrl:
+    Description: URL base de la API REST
+    Value: !Sub https://${EiraApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}
+  FrontendUrl:
+    Description: URL de CloudFront del frontend
+    Value: !Sub https://${FrontendDistribution.DomainName}
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+  FrontendDistributionId:
+    Value: !Ref FrontendDistribution
+  DocumentsBucketName:
+    Value: !Ref DocumentsBucket
+  UserPoolId:
+    Value: !Ref AdminUserPool
+  UserPoolClientId:
+    Value: !Ref AdminUserPoolClient
+  CognitoDomain:
+    Value: !Sub https://${AdminUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+  PatientsTableName:
+    Value: !Ref PatientsTable
+  PinChallengesTableName:
+    Value: !Ref PinChallengesTable
+  AccessSessionsTableName:
+    Value: !Ref AccessSessionsTable
+  ResultsTableName:
+    Value: !Ref ResultsTable
+  AuditLogTableName:
+    Value: !Ref AuditLogTable
+  WebAclArn:
+    Condition: CreateWaf
+    Value: !GetAtt ApiWebAcl.Arn

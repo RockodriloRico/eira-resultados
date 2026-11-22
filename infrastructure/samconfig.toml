@@ -1,0 +1,37 @@
+# Configuración de AWS SAM CLI por entorno (región prevista: us-east-1).
+# - No contiene perfiles, cuentas ni credenciales.
+# - Los bloques deploy solo documentan parámetros: NO está autorizado ejecutar `sam deploy`.
+# - prod no sobrescribe EnableWaf (Rules exige 'true') y no admite SmsProvider=mock.
+version = 0.1
+
+[default.global.parameters]
+region = "us-east-1"
+
+[default.validate.parameters]
+lint = true
+
+[default.build.parameters]
+build_dir = "../.aws-sam/build"
+cached = false
+parallel = true
+
+[dev.deploy.parameters]
+stack_name = "eira-resultados-dev"
+region = "us-east-1"
+capabilities = "CAPABILITY_NAMED_IAM"
+confirm_changeset = true
+parameter_overrides = "Stage=dev SmsProvider=mock EnableWaf=false CognitoDomainPrefix=eira-resultados-dev"
+
+[demo.deploy.parameters]
+stack_name = "eira-resultados-demo"
+region = "us-east-1"
+capabilities = "CAPABILITY_NAMED_IAM"
+confirm_changeset = true
+parameter_overrides = "Stage=demo SmsProvider=mock EnableWaf=true CognitoDomainPrefix=eira-resultados-demo"
+
+[prod.deploy.parameters]
+stack_name = "eira-resultados-prod"
+region = "us-east-1"
+capabilities = "CAPABILITY_NAMED_IAM"
+confirm_changeset = true
+parameter_overrides = "Stage=prod SmsProvider=sns CognitoDomainPrefix=eira-resultados-prod"

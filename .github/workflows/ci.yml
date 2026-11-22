@@ -35,6 +35,52 @@ jobs:
       - name: Auditoría de dependencias
         run: npm audit --audit-level=high
 
+  infrastructure:
+    name: Infraestructura (SAM, cfn-lint, Checkov, DynamoDB Local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Sin credenciales: solo validación local de la plantilla. Nunca sam deploy.
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+      SAM_CLI_TELEMETRY: '0'
+    services:
+      dynamodb-local:
+        image: amazon/dynamodb-local:3.3.2@sha256:6ada631ec7aa5fc83446855eb17233e3dad184fec47477e8140c6c569cfe0c86
+        ports:
+          - 8000:8000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Instalar SAM CLI, cfn-lint y Checkov (entornos virtuales separados)
+        run: |
+          python -m venv "$RUNNER_TEMP/sam" && "$RUNNER_TEMP/sam/bin/pip" install -q -r infrastructure/requirements-sam.txt
+          python -m venv "$RUNNER_TEMP/checkov" && "$RUNNER_TEMP/checkov/bin/pip" install -q -r infrastructure/requirements-checkov.txt
+          echo "$RUNNER_TEMP/sam/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/checkov/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - name: sam validate --lint y cfn-lint
+        run: npm run infra:validate
+      - name: cfn-lint sobre la plantilla traducida por SAM
+        working-directory: infrastructure
+        run: |
+          mkdir -p ../.aws-sam
+          "$RUNNER_TEMP/sam/bin/python" scripts/translate_sam.py template.yaml ../.aws-sam/translated.json
+          cfn-lint --regions us-east-1 -- ../.aws-sam/translated.json
+      - name: Checkov
+        run: npm run infra:checkov
+      - name: sam build (Node.js 24, arm64)
+        run: npm run build:sam -w @eira/infrastructure
+      - name: Pruebas de integración con DynamoDB Local
+        run: npm run test:integration
+
   secret-scan:
     name: Búsqueda de secretos (gitleaks)
     runs-on: ubuntu-latest
