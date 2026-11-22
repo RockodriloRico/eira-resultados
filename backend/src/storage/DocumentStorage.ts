@@ -56,6 +56,7 @@ export class S3DocumentStorage implements DocumentStorage {
         Key: key,
         Body: body,
         ContentType: 'application/pdf',
+        Metadata: { sha256: sha256Base64(body) },
         ServerSideEncryption: 'aws:kms',
         SSEKMSKeyId: this.kmsKeyArn,
         IfNoneMatch: '*',

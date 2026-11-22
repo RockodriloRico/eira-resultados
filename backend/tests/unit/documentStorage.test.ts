@@ -1,6 +1,6 @@
 import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { describe, expect, it, vi } from 'vitest';
-import { S3DocumentStorage } from '../../src/storage/DocumentStorage.ts';
+import { S3DocumentStorage, sha256Base64 } from '../../src/storage/DocumentStorage.ts';
 
 const key = `results/pat_${'a'.repeat(22)}/res_${'b'.repeat(22)}/v1.pdf`;
 const keyArn = 'arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000';
@@ -63,5 +63,16 @@ describe('S3DocumentStorage.head', () => {
     const storage = new S3DocumentStorage({ send } as unknown as S3Client, 'bucket', keyArn);
     expect(await storage.head(key)).toEqual({ sizeBytes: 10, sha256: 'abc=' });
     expect(send.mock.calls[0]![0].input.ChecksumMode).toBeUndefined();
+  });
+});
+
+describe('S3DocumentStorage.put', () => {
+  it('guarda el SHA-256 en metadatos para que head() pueda verificarlo', async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const body = new Uint8Array([1, 2, 3]);
+    await new S3DocumentStorage({ send } as unknown as S3Client, 'bucket', keyArn).put(key, body);
+    const input = send.mock.calls[0]![0].input;
+    expect(input.Metadata).toEqual({ sha256: sha256Base64(body) });
+    expect(input.IfNoneMatch).toBe('*');
   });
 });
