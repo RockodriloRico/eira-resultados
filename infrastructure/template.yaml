@@ -1315,6 +1315,13 @@ Resources:
     Properties:
       CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
 
+  # El stage con access logs debe crearse después de AWS::ApiGateway::Account cuando este existe.
+  # DependsOn no admite recursos condicionales; el Ref condicional en Metadata crea la dependencia.
+  ApiGatewayAccountReady:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    Metadata:
+      ApiGatewayAccount: !If [CreateApiGatewayAccountRole, !Ref ApiGatewayAccount, none]
+
   # ---------------------------------------------------------------- CloudWatch Logs
   AccessRequestLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1753,6 +1760,7 @@ Resources:
   # ---------------------------------------------------------------- API Gateway REST
   EiraApi:
     Type: AWS::Serverless::Api
+    DependsOn: ApiGatewayAccountReady
     Metadata:
       checkov:
         skip:
@@ -1895,7 +1903,7 @@ Resources:
       checkov:
         skip:
           - id: CKV2_AWS_31
-            comment: Logs de WAF fuera de la etapa 1 por costo (decisión 8); métricas y muestras activas.
+            comment: Logs de WAF fuera de la etapa 1 por costo (decisión 8); métricas activas, muestras desactivadas para no retener encabezados con tokens.
     Properties:
       Name: !Sub eira-${Stage}-api
       Description: Managed rules and per-IP rate limits for the REST API
@@ -1907,7 +1915,7 @@ Resources:
           ContentType: APPLICATION_JSON
           Content: '{"message":"Demasiadas solicitudes"}'
       VisibilityConfig:
-        SampledRequestsEnabled: true
+        SampledRequestsEnabled: false
         CloudWatchMetricsEnabled: true
         MetricName: !Sub eira-${Stage}-api
       Rules:
@@ -1920,7 +1928,7 @@ Resources:
               VendorName: AWS
               Name: AWSManagedRulesAmazonIpReputationList
           VisibilityConfig:
-            SampledRequestsEnabled: true
+            SampledRequestsEnabled: false
             CloudWatchMetricsEnabled: true
             MetricName: AWSManagedRulesAmazonIpReputationList
         - Name: AWSManagedRulesKnownBadInputsRuleSet
@@ -1932,7 +1940,7 @@ Resources:
               VendorName: AWS
               Name: AWSManagedRulesKnownBadInputsRuleSet
           VisibilityConfig:
-            SampledRequestsEnabled: true
+            SampledRequestsEnabled: false
             CloudWatchMetricsEnabled: true
             MetricName: AWSManagedRulesKnownBadInputsRuleSet
         - Name: AWSManagedRulesCommonRuleSet
@@ -1943,7 +1951,7 @@ Resources:
               VendorName: AWS
               Name: AWSManagedRulesCommonRuleSet
           VisibilityConfig:
-            SampledRequestsEnabled: true
+            SampledRequestsEnabled: false
             CloudWatchMetricsEnabled: true
             MetricName: AWSManagedRulesCommonRuleSet
         - Name: AccessRequestPerIp
@@ -1978,7 +1986,7 @@ Resources:
                           - Priority: 0
                             Type: NONE
           VisibilityConfig:
-            SampledRequestsEnabled: true
+            SampledRequestsEnabled: false
             CloudWatchMetricsEnabled: true
             MetricName: AccessRequestPerIp
         - Name: AccessVerifyPerIp
@@ -2003,7 +2011,7 @@ Resources:
                     - Priority: 0
                       Type: NONE
           VisibilityConfig:
-            SampledRequestsEnabled: true
+            SampledRequestsEnabled: false
             CloudWatchMetricsEnabled: true
             MetricName: AccessVerifyPerIp
         - Name: GlobalPerIp
@@ -2019,7 +2027,7 @@ Resources:
               EvaluationWindowSec: 300
               AggregateKeyType: IP
           VisibilityConfig:
-            SampledRequestsEnabled: true
+            SampledRequestsEnabled: false
             CloudWatchMetricsEnabled: true
             MetricName: GlobalPerIp
       Tags:

@@ -282,6 +282,16 @@ describe('S3 y CloudFront', () => {
 describe('API Gateway REST', () => {
   const api = R.EiraApi!.Properties!;
 
+  it('crea la API (y con ella el stage) después de AWS::ApiGateway::Account cuando se gestiona', () => {
+    expect(R.EiraApi!.DependsOn).toBe('ApiGatewayAccountReady');
+    expect(R.ApiGatewayAccountReady!.Condition).toBeUndefined();
+    expect(R.ApiGatewayAccountReady!.Metadata).toEqual({
+      ApiGatewayAccount: {
+        'Fn::If': ['CreateApiGatewayAccountRole', { Ref: 'ApiGatewayAccount' }, 'none'],
+      },
+    });
+  });
+
   it('es regional, sin trazas de datos ni logs de ejecución, y con throttling por ruta', () => {
     expect(api.EndpointConfiguration).toEqual({ Type: 'REGIONAL' });
     expect(api.MethodSettings.length).toBeGreaterThan(1);
@@ -331,6 +341,14 @@ describe('WAF regional', () => {
   const rules: Record<string, any> = Object.fromEntries(
     (acl.Rules as any[]).map((r) => [r.Name, r]),
   );
+
+  it('no guarda muestras de solicitudes (incluirían encabezados con tokens)', () => {
+    const configs = [acl.VisibilityConfig, ...(acl.Rules as any[]).map((r) => r.VisibilityConfig)];
+    for (const config of configs) {
+      expect(config.SampledRequestsEnabled).toBe(false);
+      expect(config.CloudWatchMetricsEnabled).toBe(true);
+    }
+  });
 
   it('incluye las reglas administradas acordadas', () => {
     expect(acl.Scope).toBe('REGIONAL');

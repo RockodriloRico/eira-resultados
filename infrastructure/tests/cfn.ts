@@ -8,6 +8,7 @@ export type Resource = {
   Condition?: string;
   Properties?: Record<string, any>;
   Metadata?: Record<string, any>;
+  DependsOn?: string | string[];
   DeletionPolicy?: string;
 };
 export type Template = {
