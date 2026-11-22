@@ -86,6 +86,9 @@ export const uploadUrlBody = z.strictObject({
   /** SHA-256 del archivo en base64 (formato de x-amz-checksum-sha256). */
   sha256: z.string().regex(/^[A-Za-z0-9+/]{43}=$/),
 });
+/** Confirmación de carga: S3 ya verificó el SHA-256 al recibir el archivo; aquí se compara. */
+export const submitDocumentBody = uploadUrlBody.omit({ contentType: true });
+export type ReviewUrlResponse = { url: string; expiresIn: number };
 export type UploadUrlResponse = {
   url: string;
   method: 'PUT';

@@ -11,7 +11,18 @@ import type { PatientRecord, PatientsRepository } from '../repositories/patients
 export type Clock = () => Date;
 export type ActorMeta = { adminId: string; requestId?: string };
 
-export const toAdminPatientView = (p: PatientRecord): AdminPatientView => ({
+/** Únicos atributos que el rol admin-patients puede leer (condición IAM dynamodb:Attributes). */
+export const ADMIN_VIEW_ATTRIBUTES = [
+  'patientId',
+  'status',
+  'dataClassification',
+  'phoneE164',
+  'createdAt',
+] as const;
+
+export const toAdminPatientView = (
+  p: Pick<PatientRecord, (typeof ADMIN_VIEW_ATTRIBUTES)[number]>,
+): AdminPatientView => ({
   patientId: p.patientId,
   status: p.status,
   dataClassification: p.dataClassification,
@@ -87,7 +98,7 @@ export class PatientService {
   }
 
   async get(patientId: string, meta: ActorMeta): Promise<AdminPatientView | undefined> {
-    const record = await this.deps.patients.get(patientId);
+    const record = await this.deps.patients.getAttributes(patientId, ADMIN_VIEW_ATTRIBUTES);
     if (!record) return undefined;
     await this.deps.audit.append(
       {

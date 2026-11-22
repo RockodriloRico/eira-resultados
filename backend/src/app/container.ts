@@ -8,6 +8,11 @@ import { ResultsRepository } from '../repositories/resultsRepository.ts';
 import { SessionsRepository } from '../repositories/sessionsRepository.ts';
 import { PatientResultsService } from '../services/patientResultsService.ts';
 import { SessionService } from '../services/sessionService.ts';
+import { PatientsRepository } from '../repositories/patientsRepository.ts';
+import { AuditQueryService } from '../services/auditQueryService.ts';
+import { DocumentService } from '../services/documentService.ts';
+import { PatientService } from '../services/patientService.ts';
+import { ResultService } from '../services/resultService.ts';
 import { type DocumentStorage, S3DocumentStorage } from '../storage/DocumentStorage.ts';
 import { AwsSnsSmsProvider, MockSmsProvider, type SmsProvider } from '../sms/SmsProvider.ts';
 
@@ -22,6 +27,10 @@ export type Container = {
   access: AccessService;
   sessions: SessionService;
   patientResults: PatientResultsService;
+  patients: PatientService;
+  results: ResultService;
+  documents: DocumentService;
+  auditQueries: AuditQueryService;
 };
 
 export function buildContainer(
@@ -50,6 +59,8 @@ export function buildContainer(
     overrides.storage ??
     new S3DocumentStorage(new S3Client({}), config.documentsBucket, config.documentsKeyArn);
   const results = new ResultsRepository(db, config.tables.results);
+  const patients = new PatientsRepository(db, config.tables.patients);
+  const resultService = new ResultService({ results, patients, audit, clock });
   return {
     config,
     db,
@@ -64,6 +75,10 @@ export function buildContainer(
       clock,
     }),
     patientResults: new PatientResultsService({ results, audit, storage }),
+    patients: new PatientService({ config, patients, audit, secrets, clock }),
+    results: resultService,
+    documents: new DocumentService({ results: resultService, repo: results, audit, storage }),
+    auditQueries: new AuditQueryService(audit),
   };
 }
 

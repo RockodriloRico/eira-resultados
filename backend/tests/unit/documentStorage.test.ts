@@ -24,3 +24,33 @@ describe('S3DocumentStorage.put', () => {
     );
   });
 });
+
+describe('S3DocumentStorage.uploadUrl', () => {
+  it('firma tamaño, SHA-256 y SSE-KMS como encabezados obligatorios', async () => {
+    const { S3Client } = await import('@aws-sdk/client-s3');
+    const s3 = new S3Client({
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'AKIDSINTETICO', secretAccessKey: 'sintetico' },
+    });
+    const sha256 = 'A'.repeat(43) + '=';
+    const { url, headers } = await new S3DocumentStorage(s3, 'bucket', keyArn).uploadUrl(
+      key,
+      { sha256, sizeBytes: 1234 },
+      300,
+    );
+    const q = new URL(url).searchParams;
+    expect(q.get('X-Amz-Expires')).toBe('300');
+    const signed = q.get('X-Amz-SignedHeaders')!.split(';');
+    expect(signed).toEqual(
+      expect.arrayContaining([
+        'content-length',
+        'content-type',
+        'x-amz-checksum-sha256',
+        'x-amz-server-side-encryption',
+        'x-amz-server-side-encryption-aws-kms-key-id',
+      ]),
+    );
+    expect(headers['x-amz-checksum-sha256']).toBe(sha256);
+    expect(headers['x-amz-server-side-encryption-aws-kms-key-id']).toBe(keyArn);
+  });
+});

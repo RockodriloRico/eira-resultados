@@ -25,6 +25,8 @@ export type PatientIndexItem = Pick<
   'resultId' | 'patientId' | 'createdAt' | 'resultType' | 'status' | 'sampleDate' | 'availableAt'
 >;
 
+export const REVIEW_ATTRIBUTES = ['resultId', 'patientId', 'status', 's3Key'] as const;
+
 export const documentKey = (patientId: string, resultId: string, version: number) =>
   `results/${patientId}/${resultId}/v${version}.pdf`;
 
@@ -59,6 +61,23 @@ export class ResultsRepository {
       new GetCommand({ TableName: this.table, Key: { resultId }, ConsistentRead: true }),
     );
     return out.Item as ResultRecord | undefined;
+  }
+
+  /** Lectura mínima para la URL de revisión (condición IAM dynamodb:Attributes del rol). */
+  async getForReview(
+    resultId: string,
+  ): Promise<Pick<ResultRecord, (typeof REVIEW_ATTRIBUTES)[number]> | undefined> {
+    const names = Object.fromEntries(REVIEW_ATTRIBUTES.map((a, i) => [`#a${i}`, a]));
+    const out = await this.db.send(
+      new GetCommand({
+        TableName: this.table,
+        Key: { resultId },
+        ProjectionExpression: Object.keys(names).join(', '),
+        ExpressionAttributeNames: names,
+        ConsistentRead: true,
+      }),
+    );
+    return out.Item as Pick<ResultRecord, (typeof REVIEW_ATTRIBUTES)[number]> | undefined;
   }
 
   /** PatientIndex no proyecta s3Key: el listado nunca expone la ubicación del documento. */

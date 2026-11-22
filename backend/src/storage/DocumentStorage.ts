@@ -1,7 +1,13 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- claves validadas con DOCUMENT_KEY_RE */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { GetObjectCommand, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { createHash } from 'node:crypto';
+import {
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  type S3Client,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { hmac, safeEqual } from '../security/crypto.ts';
 
@@ -9,11 +15,21 @@ import { hmac, safeEqual } from '../security/crypto.ts';
 export const DOCUMENT_KEY_RE =
   /^results\/pat_[A-Za-z0-9_-]{22}\/res_[A-Za-z0-9_-]{22}\/v\d{1,6}\.pdf$/;
 
+export type UploadSpec = { sha256: string; sizeBytes: number };
+export type SignedUpload = { url: string; headers: Record<string, string> };
+
 export interface DocumentStorage {
   put(key: string, body: Uint8Array): Promise<void>;
   /** URL de lectura que expira sola a los `ttlSeconds`. */
   readUrl(key: string, ttlSeconds: number): Promise<string>;
+  /** URL de carga PUT que solo acepta un archivo con ese tamaño y SHA-256 (base64). */
+  uploadUrl(key: string, spec: UploadSpec, ttlSeconds: number): Promise<SignedUpload>;
+  /** Tamaño y SHA-256 del objeto almacenado, sin leer su contenido; `undefined` si no existe. */
+  head(key: string): Promise<UploadSpec | undefined>;
 }
+
+export const sha256Base64 = (body: Uint8Array) =>
+  createHash('sha256').update(body).digest('base64');
 
 const assertKey = (key: string) => {
   if (!DOCUMENT_KEY_RE.test(key)) throw new Error('Clave de documento no válida');
@@ -60,6 +76,52 @@ export class S3DocumentStorage implements DocumentStorage {
       { expiresIn: ttlSeconds },
     );
   }
+
+  async uploadUrl(key: string, spec: UploadSpec, ttlSeconds: number): Promise<SignedUpload> {
+    assertKey(key);
+    if (!this.kmsKeyArn) throw new Error('DOCUMENTS_KEY_ARN no configurado');
+    // Encabezados firmados (no en la query): S3 rechaza otro tamaño, otro SHA-256 u otro cifrado.
+    const headers = {
+      'content-type': 'application/pdf',
+      'x-amz-checksum-sha256': spec.sha256,
+      'x-amz-server-side-encryption': 'aws:kms',
+      'x-amz-server-side-encryption-aws-kms-key-id': this.kmsKeyArn,
+    };
+    const url = await getSignedUrl(
+      this.s3,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentType: 'application/pdf',
+        ContentLength: spec.sizeBytes,
+        ChecksumSHA256: spec.sha256,
+        ServerSideEncryption: 'aws:kms',
+        SSEKMSKeyId: this.kmsKeyArn,
+      }),
+      {
+        expiresIn: ttlSeconds,
+        unhoistableHeaders: new Set(Object.keys(headers)),
+        signableHeaders: new Set(['content-type', 'content-length']),
+      },
+    );
+    return { url, headers };
+  }
+
+  async head(key: string): Promise<UploadSpec | undefined> {
+    assertKey(key);
+    try {
+      const out = await this.s3.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key, ChecksumMode: 'ENABLED' }),
+      );
+      if (out.ContentLength === undefined || !out.ChecksumSHA256) return undefined;
+      return { sizeBytes: out.ContentLength, sha256: out.ChecksumSHA256 };
+    } catch (error) {
+      const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata
+        ?.httpStatusCode;
+      if (status === 404) return undefined;
+      throw error;
+    }
+  }
 }
 
 /**
@@ -101,6 +163,46 @@ export class LocalDocumentStorage implements DocumentStorage {
     if (!safeEqual(sig, this.sign(key, exp))) return undefined;
     if (exp <= Math.floor(this.clock().getTime() / 1000)) return undefined;
     return readFile(join(this.dir, key)).catch(() => undefined);
+  }
+
+  async uploadUrl(key: string, spec: UploadSpec, ttlSeconds: number): Promise<SignedUpload> {
+    assertKey(key);
+    const exp = Math.floor(this.clock().getTime() / 1000) + ttlSeconds;
+    const sig = this.sign(`upload:${key}:${spec.sizeBytes}:${spec.sha256}`, exp);
+    const params = new URLSearchParams({
+      key,
+      exp: String(exp),
+      size: String(spec.sizeBytes),
+      sig,
+    });
+    return {
+      url: `${this.baseUrl}/local-documents/upload?${params.toString()}`,
+      headers: { 'content-type': 'application/pdf', 'x-amz-checksum-sha256': spec.sha256 },
+    };
+  }
+
+  /** Imita a S3: firma vigente y el cuerpo debe tener el tamaño y SHA-256 firmados. */
+  async acceptUpload(
+    params: URLSearchParams,
+    checksum: string | undefined,
+    body: Uint8Array,
+  ): Promise<boolean> {
+    const key = params.get('key') ?? '';
+    const exp = Number(params.get('exp'));
+    const size = Number(params.get('size'));
+    const sig = params.get('sig') ?? '';
+    if (!DOCUMENT_KEY_RE.test(key) || !Number.isInteger(exp) || !checksum) return false;
+    if (!safeEqual(sig, this.sign(`upload:${key}:${size}:${checksum}`, exp))) return false;
+    if (exp <= Math.floor(this.clock().getTime() / 1000)) return false;
+    if (body.byteLength !== size || sha256Base64(body) !== checksum) return false;
+    await this.put(key, body);
+    return true;
+  }
+
+  async head(key: string): Promise<UploadSpec | undefined> {
+    assertKey(key);
+    const body = await readFile(join(this.dir, key)).catch(() => undefined);
+    return body && { sizeBytes: body.byteLength, sha256: sha256Base64(body) };
   }
 
   private sign(key: string, exp: number): string {

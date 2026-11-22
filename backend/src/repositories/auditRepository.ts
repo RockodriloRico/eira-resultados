@@ -107,11 +107,11 @@ export class AuditRepository {
   }
 
   async query(params: {
-    patientId?: string;
-    eventType?: string;
+    patientId?: string | undefined;
+    eventType?: string | undefined;
     from: string;
     to: string;
-    cursor?: string;
+    cursor?: string | undefined;
     limit?: number;
   }): Promise<{ items: AuditEventView[]; cursor?: string | undefined }> {
     const byPatient = params.patientId !== undefined;
