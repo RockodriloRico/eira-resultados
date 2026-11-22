@@ -189,18 +189,19 @@ describe('KMS: llaves separadas para datos y documentos', () => {
     expect(json(R.DocumentsBucket)).not.toContain('DataKey');
   });
 
-  it('DocumentsKey solo descifra para el rol de descarga y solo genera llaves para admin-results', () => {
+  it('DocumentsKey solo descifra para descarga y revisión, y solo genera llaves para admin-results', () => {
     const statements = R.DocumentsKey!.Properties!.KeyPolicy.Statement as any[];
     const deny = (sid: string) => statements.find((s) => s.Sid === sid);
     const roleName = (id: string) =>
       json(R[id]!.Properties!.RoleName).match(/eira-\$\{Stage\}-[a-z-]+/)![0];
-    expect(deny('DecryptOnlyByDownloadRole')).toMatchObject({
+    expect(deny('DecryptOnlyByReaderRoles')).toMatchObject({
       Effect: 'Deny',
       Action: 'kms:Decrypt',
     });
-    expect(json(deny('DecryptOnlyByDownloadRole').Condition)).toContain(
-      `role/${roleName('DownloadUrlRole')}`,
-    );
+    const readers = deny('DecryptOnlyByReaderRoles').Condition.ArnNotEquals['aws:PrincipalArn'];
+    expect(readers).toHaveLength(2);
+    expect(json(readers)).toContain(`role/${roleName('DownloadUrlRole')}`);
+    expect(json(readers)).toContain(`role/${roleName('AdminReviewUrlRole')}`);
     expect(deny('GenerateDataKeyOnlyByAdminResultsRole')).toMatchObject({ Effect: 'Deny' });
     expect(json(deny('GenerateDataKeyOnlyByAdminResultsRole').Condition)).toContain(
       `role/${roleName('AdminResultsRole')}`,
@@ -249,8 +250,21 @@ describe('S3 y CloudFront', () => {
       StringNotEqualsIfExists: { 's3:x-amz-server-side-encryption': 'aws:kms' },
     });
     expect(json(bySid.DenyOtherKmsKeys.Condition)).toContain('DocumentsKey');
-    expect(bySid.ReadOnlyByDownloadRole.Effect).toBe('Deny');
-    expect(json(bySid.ReadOnlyByDownloadRole.Condition)).toContain('DownloadUrlRole');
+    // La URL de carga firma If-None-Match; el preflight del navegador debe permitirlo.
+    expect(R.DocumentsBucket!.Properties!.CorsConfiguration.CorsRules[0].AllowedHeaders).toEqual(
+      expect.arrayContaining(['content-type', 'if-none-match', 'x-amz-*']),
+    );
+    expect(bySid.DenyOverwrite).toMatchObject({
+      Effect: 'Deny',
+      Action: 's3:PutObject',
+      Condition: { Null: { 's3:if-none-match': 'true' } },
+    });
+    expect(bySid.ReadOnlyByAuthorizedRoles.Effect).toBe('Deny');
+    expect(
+      bySid.ReadOnlyByAuthorizedRoles.Condition.ArnNotEquals['aws:PrincipalArn'].map(
+        (a: any) => a['Fn::GetAtt'][0],
+      ),
+    ).toEqual(['DownloadUrlRole', 'AdminReviewUrlRole', 'AdminResultsRole']);
     expect(bySid.WriteOnlyByAdminResultsRole.Effect).toBe('Deny');
     expect(json(bySid.WriteOnlyByAdminResultsRole.Condition)).toContain('AdminResultsRole');
     expect(statements.filter((s) => s.Effect === 'Allow')).toEqual([]);
@@ -304,6 +318,18 @@ describe('API Gateway REST', () => {
     }
   });
 
+  it('cada ruta tiene su propio ajuste de throttling (ruta codificada con ~1)', () => {
+    const configured = new Set(
+      api.MethodSettings.map((m: any) => `${m.HttpMethod} ${m.ResourcePath}`),
+    );
+    for (const [, fn] of resourcesOfType(t, 'AWS::Serverless::Function')) {
+      for (const e of Object.values<any>(fn.Properties!.Events ?? {})) {
+        const path = `/${e.Properties.Path.replaceAll('/', '~1')}`;
+        expect(configured, path).toContain(`${e.Properties.Method.toUpperCase()} ${path}`);
+      }
+    }
+  });
+
   it('los access logs no registran cuerpos, headers ni tokens', () => {
     const format: string = api.AccessLogSetting.Format;
     expect(format).not.toMatch(/body|header|Authorization|token|apiKey/i);
@@ -330,7 +356,14 @@ describe('API Gateway REST', () => {
       'GET /v1/results': 'SessionAuthorizer',
       'POST /v1/results/{resultId}/download-url': 'SessionAuthorizer',
       'POST /v1/admin/patients': 'CognitoAuthorizer',
+      'GET /v1/admin/patients': 'CognitoAuthorizer',
+      'GET /v1/admin/patients/{patientId}': 'CognitoAuthorizer',
+      'GET /v1/admin/patients/{patientId}/results': 'CognitoAuthorizer',
       'POST /v1/admin/results': 'CognitoAuthorizer',
+      'POST /v1/admin/results/{resultId}/upload-url': 'CognitoAuthorizer',
+      'POST /v1/admin/results/{resultId}/submit': 'CognitoAuthorizer',
+      'POST /v1/admin/results/{resultId}/review': 'CognitoAuthorizer',
+      'POST /v1/admin/results/{resultId}/review-url': 'CognitoAuthorizer',
       'GET /v1/admin/audit': 'CognitoAuthorizer',
     });
   });
@@ -401,10 +434,10 @@ describe('IAM: un rol por función y mínimo privilegio', () => {
   const roleOf = (fn: Resource) =>
     (fn.Properties!.Role as { 'Fn::GetAtt': string[] })['Fn::GetAtt'][0]!;
 
-  it('cada una de las 10 funciones tiene su propio rol explícito', () => {
-    expect(functions).toHaveLength(10);
+  it('cada una de las 11 funciones tiene su propio rol explícito', () => {
+    expect(functions).toHaveLength(11);
     const used = functions.map(([, fn]) => roleOf(fn));
-    expect(new Set(used).size).toBe(10);
+    expect(new Set(used).size).toBe(11);
     expect(used.sort()).toEqual(roles.map(([id]) => id).sort());
     for (const [id, fn] of functions) {
       expect(fn.Properties!.Policies, id).toBeUndefined();
@@ -477,18 +510,57 @@ describe('IAM: un rol por función y mínimo privilegio', () => {
     ]);
   });
 
-  it('la función de descarga no accede a Patients y solo ella lee documentos', () => {
+  it('descarga y revisión no acceden a Patients; solo ellas descifran documentos', () => {
     expect(json(R.DownloadUrlRole)).not.toContain('PatientsTable');
+    expect(json(R.AdminReviewUrlRole)).not.toContain('PatientsTable');
+    const decryptsDocuments = (role: Resource) =>
+      statementsOf(role).some(
+        (s) =>
+          asArray<string>(s.Action).includes('kms:Decrypt') && refersTo(s.Resource, 'DocumentsKey'),
+      );
     for (const [id, role] of roles) {
+      expect(decryptsDocuments(role), id).toBe(
+        ['DownloadUrlRole', 'AdminReviewUrlRole'].includes(id),
+      );
       const reads = statementsOf(role).some((s) =>
         asArray<string>(s.Action).includes('s3:GetObject'),
       );
-      expect(reads, id).toBe(id === 'DownloadUrlRole');
+      // admin-results solo verifica la carga (HeadObject) y no puede descifrar.
+      expect(reads, id).toBe(
+        ['DownloadUrlRole', 'AdminReviewUrlRole', 'AdminResultsRole'].includes(id),
+      );
       const writes = statementsOf(role).some((s) =>
         asArray<string>(s.Action).includes('s3:PutObject'),
       );
       expect(writes, id).toBe(id === 'AdminResultsRole');
     }
+  });
+
+  it('la URL de revisión tiene función y rol propios, de solo lectura y con atributos mínimos', () => {
+    const data = statementsOf(R.AdminReviewUrlRole!).filter((s) =>
+      asArray<string>(s.Action).some((a) => a.startsWith('dynamodb:')),
+    );
+    expect(data.map((s) => s.Action).sort()).toEqual(['dynamodb:GetItem', 'dynamodb:PutItem']);
+    const read = data.find((s) => s.Action === 'dynamodb:GetItem');
+    expect(read.Condition['ForAllValues:StringEquals']['dynamodb:Attributes']).toEqual([
+      'resultId',
+      'patientId',
+      'status',
+      's3Key',
+    ]);
+    expect(json(R.AdminReviewUrlRole)).not.toContain('s3:PutObject');
+    expect(json(R.AdminReviewUrlRole)).not.toContain('UpdateItem');
+  });
+
+  it('la lectura administrativa de Patients se limita a la vista sin hashes', () => {
+    const read = statementsOf(R.AdminPatientsRole!).find((s) => s.Sid === 'ReadPatientAdminView');
+    expect(read.Condition['ForAllValues:StringEquals']['dynamodb:Attributes']).toEqual([
+      'patientId',
+      'status',
+      'dataClassification',
+      'phoneE164',
+      'createdAt',
+    ]);
   });
 
   it('las actualizaciones de Patients y AccessSessions se limitan a atributos concretos', () => {
@@ -535,7 +607,23 @@ describe('Lambda: esqueletos Node.js 24 / arm64', () => {
         id,
       ).toBe(true);
     }
-    expect(R.SessionAuthorizerFunction!.Properties!.Handler).toBe('denyAllAuthorizer.handler');
+    expect(R.SessionAuthorizerFunction!.Properties!.Handler).toBe('sessionAuthorizer.handler');
+  });
+
+  it('las rutas usan sus handlers reales', () => {
+    expect(R.AccessRequestFunction!.Properties!.Handler).toBe('accessRequest.handler');
+    expect(R.AccessResendFunction!.Properties!.Handler).toBe('accessResend.handler');
+    expect(R.AccessVerifyFunction!.Properties!.Handler).toBe('accessVerify.handler');
+    expect(R.AccessLogoutFunction!.Properties!.Handler).toBe('accessLogout.handler');
+    expect(R.ListResultsFunction!.Properties!.Handler).toBe('listResults.handler');
+    expect(R.DownloadUrlFunction!.Properties!.Handler).toBe('downloadUrl.handler');
+  });
+
+  it('ninguna función queda con el esqueleto notImplemented', () => {
+    for (const [id, fn] of resourcesOfType(t, 'AWS::Serverless::Function')) {
+      expect(fn.Properties!.Handler, id).toMatch(/^[a-zA-Z]+\.handler$/);
+      expect(fn.Properties!.Handler, id).not.toBe('notImplemented.handler');
+    }
   });
 
   it('demoPin depende de ExposeDemoPin y no hay permisos SNS', () => {

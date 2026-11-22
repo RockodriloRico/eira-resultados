@@ -29,8 +29,17 @@ Detalles e instalación: [docs/requirements.md](docs/requirements.md).
 ```bash
 npm ci
 npm run check                  # formato, lint, tipos, pruebas y build
-npm run dev -w @eira/frontend  # http://localhost:5173
+npm run demo                   # demo completa (requiere Docker): http://127.0.0.1:5173
 ```
+
+La demo levanta DynamoDB Local, la API local (`127.0.0.1:3001`, mismos handlers que las Lambdas) y
+Vite (`127.0.0.1:5173`). Solo usa datos sintéticos, `MockSmsProvider` y el `demoPin` en pantalla;
+no usa AWS ni credenciales.
+
+- **Paciente:** `#/` con `Ana Prueba Sintética`, `1985-03-14`, `SINT-0001` (o `SINT-0002`:
+  `Beatriz Ejemplo Ficticia`, `1990-11-02`).
+- **Administración:** `#/admin`, con una identidad sintética que solo existe en el servidor local.
+  En AWS la administración usa Cognito.
 
 ## Documentación
 

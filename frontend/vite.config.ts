@@ -6,6 +6,16 @@ export default defineConfig({
   css: {
     modules: { localsConvention: 'camelCaseOnly' },
   },
+  // Demo local: Vite y la API solo en 127.0.0.1; la API se alcanza por proxy (mismo origen).
+  server: {
+    host: '127.0.0.1',
+    port: 5173,
+    strictPort: true,
+    proxy: {
+      '/v1': 'http://127.0.0.1:3001',
+      '/local-documents': 'http://127.0.0.1:3001',
+    },
+  },
   build: {
     sourcemap: false,
   },

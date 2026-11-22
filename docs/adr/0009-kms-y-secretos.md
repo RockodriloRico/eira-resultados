@@ -19,3 +19,16 @@ Los datos de pacientes (DynamoDB), los secretos HMAC y los logs tienen consumido
 - Costo aproximado de USD 1 al mes por llave adicional, más solicitudes.
 - Nadie, salvo el rol de descarga, puede descifrar documentos por API, incluido el personal con acceso a la consola, mientras no cambie la política de la llave (un administrador de la cuenta sí puede cambiarla).
 - Subidas multiparte de documentos requerirían permitir `kms:Decrypt` también al rol administrativo de resultados.
+
+## Enmienda (etapa 2, entrega 4): revisión administrativa de legibilidad
+
+Aprobada como opción A. Cambios en la plantilla:
+
+- **Función y rol propios** `eira-<stage>-admin-review-url` (`POST /v1/admin/results/{resultId}/review-url`, Cognito). El rol solo puede: `GetItem` de `Results` limitado a `resultId, patientId, status, s3Key`; `PutItem` en `AuditLog`; `s3:GetObject` en `results/*`; `kms:Decrypt` de `DocumentsKey` vía S3. Sin `Patients`, sin `UpdateItem`, sin `PutObject`.
+- **`DocumentsKey`**: `kms:Decrypt` se niega a todo principal salvo `download-url` y `admin-review-url` (antes solo `download-url`).
+- **Bucket de documentos**: `s3:GetObject` se niega salvo a `download-url`, `admin-review-url` y `admin-results`. `admin-results` lo necesita solo para `HeadObject` (verificar tamaño y SHA-256 de la carga); sin `kms:Decrypt` no puede leer el contenido.
+- La aplicación emite la URL (60 s) solo si el resultado está en `PENDING_REVIEW`, y audita `REVIEW_URL_ISSUED` antes de firmar; los rechazos se auditan como `FAILURE`.
+
+Alternativa descartada: dar `kms:Decrypt` al rol `admin-results`, que además crea, carga y cambia estados; mezclaría lectura de documentos con escritura.
+
+Sin verificar hasta un despliegue: que `HeadObject` sobre objetos SSE-KMS no requiera `kms:Decrypt` (según la documentación de S3 no lo requiere) y la firma real de la URL de carga.

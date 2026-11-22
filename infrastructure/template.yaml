@@ -151,7 +151,8 @@ Resources:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: kms:*
             Resource: '*'
-          - Sid: DecryptOnlyByDownloadRole
+          # Descifran documentos solo la descarga de pacientes (APPROVED) y la revisión (PENDING_REVIEW).
+          - Sid: DecryptOnlyByReaderRoles
             Effect: Deny
             Principal:
               AWS: '*'
@@ -159,7 +160,9 @@ Resources:
             Resource: '*'
             Condition:
               ArnNotEquals:
-                aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/eira-${Stage}-download-url
+                aws:PrincipalArn:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/eira-${Stage}-download-url
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/eira-${Stage}-admin-review-url
           - Sid: GenerateDataKeyOnlyByAdminResultsRole
             Effect: Deny
             Principal:
@@ -453,7 +456,7 @@ Resources:
           - AllowedMethods: [PUT]
             AllowedOrigins:
               - !Sub https://${FrontendDistribution.DomainName}
-            AllowedHeaders: [content-type, x-amz-*]
+            AllowedHeaders: [content-type, if-none-match, x-amz-*]
             MaxAge: 300
       Tags:
         - Key: Project
@@ -486,6 +489,15 @@ Resources:
             Condition:
               StringNotEqualsIfExists:
                 s3:x-amz-server-side-encryption: aws:kms
+          # Los documentos no se sobrescriben: toda escritura debe ser condicional (If-None-Match).
+          - Sid: DenyOverwrite
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DocumentsBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:if-none-match: 'true'
           - Sid: DenyOtherKmsKeys
             Effect: Deny
             Principal: '*'
@@ -494,7 +506,9 @@ Resources:
             Condition:
               StringNotEqualsIfExists:
                 s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt DocumentsKey.Arn
-          - Sid: ReadOnlyByDownloadRole
+          # admin-results solo hace HeadObject (s3:GetObject) para verificar la carga: sin kms:Decrypt
+          # no puede leer el contenido.
+          - Sid: ReadOnlyByAuthorizedRoles
             Effect: Deny
             Principal: '*'
             Action:
@@ -503,7 +517,10 @@ Resources:
             Resource: !Sub ${DocumentsBucket.Arn}/*
             Condition:
               ArnNotEquals:
-                aws:PrincipalArn: !GetAtt DownloadUrlRole.Arn
+                aws:PrincipalArn:
+                  - !GetAtt DownloadUrlRole.Arn
+                  - !GetAtt AdminReviewUrlRole.Arn
+                  - !GetAtt AdminResultsRole.Arn
           - Sid: WriteOnlyByAdminResultsRole
             Effect: Deny
             Principal: '*'
@@ -1160,6 +1177,16 @@ Resources:
                 Effect: Allow
                 Action: dynamodb:Query
                 Resource: !Sub ${PatientsTable.Arn}/index/FolioHashIndex
+              - Sid: ReadPatientAdminView
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt PatientsTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:Attributes:
+                      [patientId, status, dataClassification, phoneE164, createdAt]
+                  StringEquals:
+                    dynamodb:Select: SPECIFIC_ATTRIBUTES
               - Sid: AppendAudit
                 Effect: Allow
                 Action: dynamodb:PutItem
@@ -1213,6 +1240,21 @@ Resources:
                 Effect: Allow
                 Action: dynamodb:PutItem
                 Resource: !GetAtt ResultsTable.Arn
+              - Sid: ReadResults
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt ResultsTable.Arn
+              - Sid: ListPatientResults
+                Effect: Allow
+                Action: dynamodb:Query
+                Resource: !Sub ${ResultsTable.Arn}/index/PatientIndex
+              - Sid: TransitionResult
+                Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt ResultsTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
               - Sid: CheckPatientExists
                 Effect: Allow
                 Action: dynamodb:GetItem
@@ -1240,9 +1282,71 @@ Resources:
                 Effect: Allow
                 Action: s3:PutObject
                 Resource: !Sub ${DocumentsBucket.Arn}/results/*
+              - Sid: VerifyUploadedDocument
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${DocumentsBucket.Arn}/results/*
               - Sid: EncryptDocumentsViaS3
                 Effect: Allow
                 Action: kms:GenerateDataKey
+                Resource: !GetAtt DocumentsKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
+
+  AdminReviewUrlRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub eira-${Stage}-admin-review-url
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: admin-review-url
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt AdminReviewUrlLogGroup.Arn
+              - Sid: ReadResultForReview
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt ResultsTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:Attributes: [resultId, patientId, status, s3Key]
+                  StringEquals:
+                    dynamodb:Select: SPECIFIC_ATTRIBUTES
+              - Sid: AppendAudit
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt AuditLogTable.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    dynamodb:ReturnValues: NONE
+              - Sid: UseDataKeyViaDynamoDB
+                Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !GetAtt DataKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub dynamodb.${AWS::Region}.amazonaws.com
+              - Sid: SignDocumentRead
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${DocumentsBucket.Arn}/results/*
+              - Sid: DecryptDocumentsViaS3
+                Effect: Allow
+                Action: kms:Decrypt
                 Resource: !GetAtt DocumentsKey.Arn
                 Condition:
                   StringEquals:
@@ -1403,6 +1507,14 @@ Resources:
       LogGroupName: !Sub /aws/lambda/eira-${Stage}-admin-audit
       RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
       KmsKeyId: !GetAtt DataKey.Arn
+  AdminReviewUrlLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/eira-${Stage}-admin-review-url
+      RetentionInDays: !FindInMap [StageConfig, !Ref Stage, LogRetentionDays]
+      KmsKeyId: !GetAtt DataKey.Arn
   ApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Retain
@@ -1430,6 +1542,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-request
+      Handler: accessRequest.handler
       Role: !GetAtt AccessRequestRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessRequestLogGroup
@@ -1467,6 +1580,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-resend
+      Handler: accessResend.handler
       Role: !GetAtt AccessResendRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessResendLogGroup
@@ -1503,6 +1617,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-verify
+      Handler: accessVerify.handler
       Role: !GetAtt AccessVerifyRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessVerifyLogGroup
@@ -1538,6 +1653,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-logout
+      Handler: accessLogout.handler
       Role: !GetAtt AccessLogoutRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessLogoutLogGroup
@@ -1572,7 +1688,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-session-authorizer
-      Handler: denyAllAuthorizer.handler
+      Handler: sessionAuthorizer.handler
       Role: !GetAtt SessionAuthorizerRole.Arn
       LoggingConfig:
         LogGroup: !Ref SessionAuthorizerLogGroup
@@ -1597,6 +1713,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-list-results
+      Handler: listResults.handler
       Role: !GetAtt ListResultsRole.Arn
       LoggingConfig:
         LogGroup: !Ref ListResultsLogGroup
@@ -1631,6 +1748,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-download-url
+      Handler: downloadUrl.handler
       Role: !GetAtt DownloadUrlRole.Arn
       LoggingConfig:
         LogGroup: !Ref DownloadUrlLogGroup
@@ -1667,6 +1785,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-admin-patients
+      Handler: adminPatients.handler
       Role: !GetAtt AdminPatientsRole.Arn
       LoggingConfig:
         LogGroup: !Ref AdminPatientsLogGroup
@@ -1682,6 +1801,24 @@ Resources:
             RestApiId: !Ref EiraApi
             Path: /v1/admin/patients
             Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+        FindByFolio:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/patients
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+        GetPatient:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/patients/{patientId}
+            Method: get
             Auth:
               Authorizer: CognitoAuthorizer
               AuthorizationScopes: [openid]
@@ -1703,6 +1840,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-admin-results
+      Handler: adminResults.handler
       Role: !GetAtt AdminResultsRole.Arn
       LoggingConfig:
         LogGroup: !Ref AdminResultsLogGroup
@@ -1712,12 +1850,86 @@ Resources:
           RESULTS_TABLE: !Ref ResultsTable
           AUDIT_LOG_TABLE: !Ref AuditLogTable
           DOCUMENTS_BUCKET: !Ref DocumentsBucket
+          DOCUMENTS_KEY_ARN: !GetAtt DocumentsKey.Arn
       Events:
         Api:
           Type: Api
           Properties:
             RestApiId: !Ref EiraApi
             Path: /v1/admin/results
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+        ListPatientResults:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/patients/{patientId}/results
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+        UploadUrl:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/results/{resultId}/upload-url
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+        Submit:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/results/{resultId}/submit
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+        Review:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/results/{resultId}/review
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes: [openid]
+
+  AdminReviewUrlFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: Sin concurrencia reservada en el MVP; el throttling de API Gateway acota la carga (decisión 10).
+          - id: CKV_AWS_116
+            comment: Invocación síncrona desde API Gateway; una DLQ no aplica.
+          - id: CKV_AWS_117
+            comment: Solo usa servicios regionales con IAM y TLS; una VPC con NAT no aporta control (decisión 10).
+          - id: CKV_AWS_173
+            comment: Las variables de entorno no contienen secretos (solo nombres y ARN).
+          - id: CKV_AWS_272
+            comment: Firma de código se evaluará antes del primer despliegue.
+    Properties:
+      FunctionName: !Sub eira-${Stage}-admin-review-url
+      Handler: adminReviewUrl.handler
+      Role: !GetAtt AdminReviewUrlRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref AdminReviewUrlLogGroup
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+          AUDIT_LOG_TABLE: !Ref AuditLogTable
+          DOCUMENTS_BUCKET: !Ref DocumentsBucket
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref EiraApi
+            Path: /v1/admin/results/{resultId}/review-url
             Method: post
             Auth:
               Authorizer: CognitoAuthorizer
@@ -1740,6 +1952,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-admin-audit
+      Handler: adminAudit.handler
       Role: !GetAtt AdminAuditRole.Arn
       LoggingConfig:
         LogGroup: !Ref AdminAuditLogGroup
@@ -1858,6 +2071,55 @@ Resources:
           MetricsEnabled: true
         - ResourcePath: '/~1v1~1admin~1audit'
           HttpMethod: 'GET'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1patients'
+          HttpMethod: 'GET'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1patients~1{patientId}'
+          HttpMethod: 'GET'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1patients~1{patientId}~1results'
+          HttpMethod: 'GET'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1upload-url'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1submit'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1review'
+          HttpMethod: 'POST'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          DataTraceEnabled: false
+          LoggingLevel: 'OFF'
+          MetricsEnabled: true
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1review-url'
+          HttpMethod: 'POST'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
           DataTraceEnabled: false
