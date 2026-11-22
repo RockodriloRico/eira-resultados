@@ -23,19 +23,25 @@ const assertKey = (key: string) => {
 export class S3DocumentStorage implements DocumentStorage {
   private readonly s3: S3Client;
   private readonly bucket: string;
-  constructor(s3: S3Client, bucket: string) {
+  private readonly kmsKeyArn: string | undefined;
+  constructor(s3: S3Client, bucket: string, kmsKeyArn?: string) {
     this.s3 = s3;
     this.bucket = bucket;
+    this.kmsKeyArn = kmsKeyArn;
   }
 
   async put(key: string, body: Uint8Array): Promise<void> {
     assertKey(key);
+    // La política del bucket rechaza PutObject sin SSE-KMS explícito con DocumentsKey.
+    if (!this.kmsKeyArn) throw new Error('DOCUMENTS_KEY_ARN no configurado');
     await this.s3.send(
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: key,
         Body: body,
         ContentType: 'application/pdf',
+        ServerSideEncryption: 'aws:kms',
+        SSEKMSKeyId: this.kmsKeyArn,
       }),
     );
   }

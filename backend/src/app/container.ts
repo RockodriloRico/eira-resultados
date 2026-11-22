@@ -47,7 +47,8 @@ export function buildContainer(
   const audit = new AuditRepository(db, config.tables.auditLog);
   const clock = overrides.clock ?? (() => new Date());
   const storage =
-    overrides.storage ?? new S3DocumentStorage(new S3Client({}), config.documentsBucket);
+    overrides.storage ??
+    new S3DocumentStorage(new S3Client({}), config.documentsBucket, config.documentsKeyArn);
   const results = new ResultsRepository(db, config.tables.results);
   return {
     config,
