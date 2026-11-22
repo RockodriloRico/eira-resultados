@@ -1541,6 +1541,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-logout
+      Handler: accessLogout.handler
       Role: !GetAtt AccessLogoutRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessLogoutLogGroup
@@ -1575,7 +1576,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-session-authorizer
-      Handler: denyAllAuthorizer.handler
+      Handler: sessionAuthorizer.handler
       Role: !GetAtt SessionAuthorizerRole.Arn
       LoggingConfig:
         LogGroup: !Ref SessionAuthorizerLogGroup
@@ -1600,6 +1601,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-list-results
+      Handler: listResults.handler
       Role: !GetAtt ListResultsRole.Arn
       LoggingConfig:
         LogGroup: !Ref ListResultsLogGroup
@@ -1634,6 +1636,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-download-url
+      Handler: downloadUrl.handler
       Role: !GetAtt DownloadUrlRole.Arn
       LoggingConfig:
         LogGroup: !Ref DownloadUrlLogGroup

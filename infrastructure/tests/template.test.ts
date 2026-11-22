@@ -535,13 +535,16 @@ describe('Lambda: esqueletos Node.js 24 / arm64', () => {
         id,
       ).toBe(true);
     }
-    expect(R.SessionAuthorizerFunction!.Properties!.Handler).toBe('denyAllAuthorizer.handler');
+    expect(R.SessionAuthorizerFunction!.Properties!.Handler).toBe('sessionAuthorizer.handler');
   });
 
-  it('las rutas de acceso de la entrega 2 usan sus handlers reales', () => {
+  it('las rutas de paciente usan sus handlers reales', () => {
     expect(R.AccessRequestFunction!.Properties!.Handler).toBe('accessRequest.handler');
     expect(R.AccessResendFunction!.Properties!.Handler).toBe('accessResend.handler');
     expect(R.AccessVerifyFunction!.Properties!.Handler).toBe('accessVerify.handler');
+    expect(R.AccessLogoutFunction!.Properties!.Handler).toBe('accessLogout.handler');
+    expect(R.ListResultsFunction!.Properties!.Handler).toBe('listResults.handler');
+    expect(R.DownloadUrlFunction!.Properties!.Handler).toBe('downloadUrl.handler');
   });
 
   it('demoPin depende de ExposeDemoPin y no hay permisos SNS', () => {
