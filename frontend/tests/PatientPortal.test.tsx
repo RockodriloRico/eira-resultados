@@ -85,6 +85,24 @@ describe('PatientPortal', () => {
     expect(screen.getByRole('button', { name: 'Solicitar código' })).toBeInTheDocument();
   });
 
+  it('si falla el listado conserva la sesión y permite reintentar', async () => {
+    let fail = true;
+    mockFetch({
+      'POST /v1/access/request': () => ({ status: 202, body: challenge }),
+      'POST /v1/access/verify': () => ({ body: { token: 't'.repeat(43), expiresIn: 900 } }),
+      'GET /v1/results': () =>
+        fail
+          ? ((fail = false), { status: 503, body: { message: 'No disponible' } })
+          : { body: { results: [] } },
+    });
+    render(<PatientPortal />);
+    await identify();
+    fill('Código de 6 dígitos', '123456');
+    fireEvent.click(screen.getByRole('button', { name: 'Verificar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByText('Aún no hay resultados disponibles.')).toBeInTheDocument();
+  });
+
   it('sesión vencida (401) regresa a la identificación', async () => {
     mockFetch({
       'POST /v1/access/request': () => ({ status: 202, body: challenge }),

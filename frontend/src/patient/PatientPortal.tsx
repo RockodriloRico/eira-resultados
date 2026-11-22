@@ -11,7 +11,7 @@ import styles from '../ui.module.css';
 type Step =
   | { name: 'identify' }
   | { name: 'pin'; challenge: ChallengeResponse; resendAt: number }
-  | { name: 'results'; token: string; results: PatientResultSummary[] };
+  | { name: 'results'; token: string; results?: PatientResultSummary[] };
 
 const formValue = (form: FormData, key: string) => String(form.get(key) ?? '').trim();
 
@@ -28,13 +28,13 @@ export function PatientPortal() {
     return () => clearInterval(id);
   }, [step.name]);
 
-  async function run(action: () => Promise<void>) {
+  async function run(action: () => Promise<void>, expectSession = false) {
     setBusy(true);
     setError(undefined);
     try {
       await action();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401 && step.name === 'results') {
+      if (e instanceof ApiError && e.status === 401 && (step.name === 'results' || expectSession)) {
         setStep({ name: 'identify' });
         setError('Tu sesión terminó. Vuelve a identificarte.');
       } else setError(errorMessage(e));
@@ -67,11 +67,22 @@ export function PatientPortal() {
       const { token } = await api<VerifyResponse>('POST', '/v1/access/verify', {
         body: { challengeId: step.challenge.challengeId, pin },
       });
-      const { results } = await api<{ results: PatientResultSummary[] }>('GET', '/v1/results', {
-        token,
-      });
-      setStep({ name: 'results', token, results });
+      setStep({ name: 'results', token });
+      await loadResults(token);
     });
+  };
+
+  async function loadResults(token: string) {
+    const { results } = await api<{ results: PatientResultSummary[] }>('GET', '/v1/results', {
+      token,
+    });
+    setStep({ name: 'results', token, results });
+  }
+
+  const onRetryList = () => {
+    if (step.name !== 'results') return;
+    const { token } = step;
+    void run(() => loadResults(token), true);
   };
 
   const onResend = () => {
@@ -191,7 +202,15 @@ export function PatientPortal() {
 
       {step.name === 'results' && (
         <div>
-          {step.results.length === 0 ? (
+          {step.results === undefined ? (
+            busy ? (
+              <p>Cargando resultados…</p>
+            ) : (
+              <button type="button" onClick={onRetryList}>
+                Reintentar
+              </button>
+            )
+          ) : step.results.length === 0 ? (
             <p>Aún no hay resultados disponibles.</p>
           ) : (
             <ul className={styles.list}>
