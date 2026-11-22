@@ -2067,49 +2067,49 @@ Resources:
           DataTraceEnabled: false
           LoggingLevel: 'OFF'
           MetricsEnabled: true
-        - ResourcePath: '/v1~1admin~1patients'
+        - ResourcePath: '/~1v1~1admin~1patients'
           HttpMethod: 'GET'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
           DataTraceEnabled: false
           LoggingLevel: 'OFF'
           MetricsEnabled: true
-        - ResourcePath: '/v1~1admin~1patients~1{patientId}'
+        - ResourcePath: '/~1v1~1admin~1patients~1{patientId}'
           HttpMethod: 'GET'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
           DataTraceEnabled: false
           LoggingLevel: 'OFF'
           MetricsEnabled: true
-        - ResourcePath: '/v1~1admin~1patients~1{patientId}~1results'
+        - ResourcePath: '/~1v1~1admin~1patients~1{patientId}~1results'
           HttpMethod: 'GET'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
           DataTraceEnabled: false
           LoggingLevel: 'OFF'
           MetricsEnabled: true
-        - ResourcePath: '/v1~1admin~1results~1{resultId}~1upload-url'
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1upload-url'
           HttpMethod: 'POST'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
           DataTraceEnabled: false
           LoggingLevel: 'OFF'
           MetricsEnabled: true
-        - ResourcePath: '/v1~1admin~1results~1{resultId}~1submit'
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1submit'
           HttpMethod: 'POST'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
           DataTraceEnabled: false
           LoggingLevel: 'OFF'
           MetricsEnabled: true
-        - ResourcePath: '/v1~1admin~1results~1{resultId}~1review'
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1review'
           HttpMethod: 'POST'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
           DataTraceEnabled: false
           LoggingLevel: 'OFF'
           MetricsEnabled: true
-        - ResourcePath: '/v1~1admin~1results~1{resultId}~1review-url'
+        - ResourcePath: '/~1v1~1admin~1results~1{resultId}~1review-url'
           HttpMethod: 'POST'
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20

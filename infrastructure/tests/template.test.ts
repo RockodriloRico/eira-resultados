@@ -309,6 +309,18 @@ describe('API Gateway REST', () => {
     }
   });
 
+  it('cada ruta tiene su propio ajuste de throttling (ruta codificada con ~1)', () => {
+    const configured = new Set(
+      api.MethodSettings.map((m: any) => `${m.HttpMethod} ${m.ResourcePath}`),
+    );
+    for (const [, fn] of resourcesOfType(t, 'AWS::Serverless::Function')) {
+      for (const e of Object.values<any>(fn.Properties!.Events ?? {})) {
+        const path = `/${e.Properties.Path.replaceAll('/', '~1')}`;
+        expect(configured, path).toContain(`${e.Properties.Method.toUpperCase()} ${path}`);
+      }
+    }
+  });
+
   it('los access logs no registran cuerpos, headers ni tokens', () => {
     const format: string = api.AccessLogSetting.Format;
     expect(format).not.toMatch(/body|header|Authorization|token|apiKey/i);
