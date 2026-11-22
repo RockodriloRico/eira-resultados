@@ -49,15 +49,14 @@ no usa AWS ni credenciales.
 
 ## Plan por etapas
 
-| Etapa | Alcance                                              | Estado      |
-| ----- | ---------------------------------------------------- | ----------- |
-| 0     | Estructura base, lint, pruebas, CI                   | Completada  |
-| 1     | Plantilla AWS SAM (sin desplegar)                    | En revisión |
-| 2     | Núcleo de seguridad (PIN, HMAC, SMS mock)            | Pendiente   |
-| 3     | API de paciente                                      | Pendiente   |
-| 4     | Frontend de paciente                                 | Pendiente   |
-| 5     | Administración (Cognito)                             | Pendiente   |
-| 6     | Observabilidad, datos sintéticos, modelo de amenazas | Pendiente   |
+| Etapa | Alcance                                                                                     | Estado             |
+| ----- | ------------------------------------------------------------------------------------------- | ------------------ |
+| 0     | Estructura base, lint, pruebas, CI                                                          | Completada (PR #1) |
+| 1     | Plantilla AWS SAM sin desplegar, esqueletos Lambda, DynamoDB Local                          | Completada (PR #2) |
+| 2     | Lógica de negocio, PIN, sesiones, descarga, administración, frontend y demo local           | Completada (PR #3) |
+| 3     | Preparación para despliegue e integración con AWS (Cognito en frontend, observabilidad, CD) | Plan en revisión   |
+
+Ninguna etapa ha desplegado recursos en AWS.
 
 ## Licencia
 
