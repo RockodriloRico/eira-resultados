@@ -77,6 +77,14 @@ describe('PatientPortal', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Código incorrecto o vencido');
   });
 
+  it('desde la pantalla del código se puede volver a corregir los datos', async () => {
+    mockFetch({ 'POST /v1/access/request': () => ({ status: 202, body: challenge }) });
+    render(<PatientPortal />);
+    await identify();
+    fireEvent.click(screen.getByRole('button', { name: 'Corregir mis datos' }));
+    expect(screen.getByRole('button', { name: 'Solicitar código' })).toBeInTheDocument();
+  });
+
   it('sesión vencida (401) regresa a la identificación', async () => {
     mockFetch({
       'POST /v1/access/request': () => ({ status: 202, body: challenge }),

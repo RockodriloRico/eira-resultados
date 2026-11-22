@@ -174,6 +174,17 @@ export function PatientPortal() {
                 ? `Reenviar en ${Math.ceil((step.resendAt - now) / 1000)} s`
                 : 'Reenviar código'}
             </button>
+            <button
+              type="button"
+              className={styles.secondary}
+              onClick={() => {
+                setError(undefined);
+                setStep({ name: 'identify' });
+              }}
+              disabled={busy}
+            >
+              Corregir mis datos
+            </button>
           </div>
         </form>
       )}
