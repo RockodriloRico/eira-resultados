@@ -1,5 +1,5 @@
 import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { S3DocumentStorage } from '../../src/storage/DocumentStorage.ts';
 
 const key = `results/pat_${'a'.repeat(22)}/res_${'b'.repeat(22)}/v1.pdf`;
@@ -46,11 +46,21 @@ describe('S3DocumentStorage.uploadUrl', () => {
         'content-length',
         'content-type',
         'x-amz-checksum-sha256',
+        'x-amz-meta-sha256',
         'x-amz-server-side-encryption',
         'x-amz-server-side-encryption-aws-kms-key-id',
       ]),
     );
     expect(headers['x-amz-checksum-sha256']).toBe(sha256);
     expect(headers['x-amz-server-side-encryption-aws-kms-key-id']).toBe(keyArn);
+  });
+});
+
+describe('S3DocumentStorage.head', () => {
+  it('lee tamaño y SHA-256 de metadatos, sin ChecksumMode (que exigiría kms:Decrypt)', async () => {
+    const send = vi.fn().mockResolvedValue({ ContentLength: 10, Metadata: { sha256: 'abc=' } });
+    const storage = new S3DocumentStorage({ send } as unknown as S3Client, 'bucket', keyArn);
+    expect(await storage.head(key)).toEqual({ sizeBytes: 10, sha256: 'abc=' });
+    expect(send.mock.calls[0]![0].input.ChecksumMode).toBeUndefined();
   });
 });

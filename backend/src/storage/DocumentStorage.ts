@@ -81,9 +81,12 @@ export class S3DocumentStorage implements DocumentStorage {
     assertKey(key);
     if (!this.kmsKeyArn) throw new Error('DOCUMENTS_KEY_ARN no configurado');
     // Encabezados firmados (no en la query): S3 rechaza otro tamaño, otro SHA-256 u otro cifrado.
+    // El SHA-256 se repite en metadatos porque leer el checksum de un objeto SSE-KMS exige
+    // kms:Decrypt, que admin-results no tiene; los metadatos se leen con HeadObject sin descifrar.
     const headers = {
       'content-type': 'application/pdf',
       'x-amz-checksum-sha256': spec.sha256,
+      'x-amz-meta-sha256': spec.sha256,
       'x-amz-server-side-encryption': 'aws:kms',
       'x-amz-server-side-encryption-aws-kms-key-id': this.kmsKeyArn,
     };
@@ -95,6 +98,7 @@ export class S3DocumentStorage implements DocumentStorage {
         ContentType: 'application/pdf',
         ContentLength: spec.sizeBytes,
         ChecksumSHA256: spec.sha256,
+        Metadata: { sha256: spec.sha256 },
         ServerSideEncryption: 'aws:kms',
         SSEKMSKeyId: this.kmsKeyArn,
       }),
@@ -110,11 +114,10 @@ export class S3DocumentStorage implements DocumentStorage {
   async head(key: string): Promise<UploadSpec | undefined> {
     assertKey(key);
     try {
-      const out = await this.s3.send(
-        new HeadObjectCommand({ Bucket: this.bucket, Key: key, ChecksumMode: 'ENABLED' }),
-      );
-      if (out.ContentLength === undefined || !out.ChecksumSHA256) return undefined;
-      return { sizeBytes: out.ContentLength, sha256: out.ChecksumSHA256 };
+      const out = await this.s3.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      const sha256 = out.Metadata?.sha256;
+      if (out.ContentLength === undefined || !sha256) return undefined;
+      return { sizeBytes: out.ContentLength, sha256 };
     } catch (error) {
       const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata
         ?.httpStatusCode;
