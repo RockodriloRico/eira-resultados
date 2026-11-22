@@ -250,6 +250,10 @@ describe('S3 y CloudFront', () => {
       StringNotEqualsIfExists: { 's3:x-amz-server-side-encryption': 'aws:kms' },
     });
     expect(json(bySid.DenyOtherKmsKeys.Condition)).toContain('DocumentsKey');
+    // La URL de carga firma If-None-Match; el preflight del navegador debe permitirlo.
+    expect(R.DocumentsBucket!.Properties!.CorsConfiguration.CorsRules[0].AllowedHeaders).toEqual(
+      expect.arrayContaining(['content-type', 'if-none-match', 'x-amz-*']),
+    );
     expect(bySid.DenyOverwrite).toMatchObject({
       Effect: 'Deny',
       Action: 's3:PutObject',

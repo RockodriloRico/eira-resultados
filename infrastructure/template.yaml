@@ -456,7 +456,7 @@ Resources:
           - AllowedMethods: [PUT]
             AllowedOrigins:
               - !Sub https://${FrontendDistribution.DomainName}
-            AllowedHeaders: [content-type, x-amz-*]
+            AllowedHeaders: [content-type, if-none-match, x-amz-*]
             MaxAge: 300
       Tags:
         - Key: Project
