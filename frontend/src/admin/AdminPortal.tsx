@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 import type {
   AdminPatientView,
   AdminResultView,
@@ -26,7 +26,17 @@ export function AdminPortal() {
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const [reviewLink, setReviewLink] = useState<{ resultId: string; url: string }>();
+  const [reviewLink, setReviewLink] = useState<{
+    resultId: string;
+    url: string;
+    expiresIn: number;
+  }>();
+
+  useEffect(() => {
+    if (!reviewLink) return;
+    const id = setTimeout(() => setReviewLink(undefined), reviewLink.expiresIn * 1000);
+    return () => clearTimeout(id);
+  }, [reviewLink]);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -130,11 +140,11 @@ export function AdminPortal() {
 
   const onViewPdf = (resultId: string) =>
     void run(async () => {
-      const { url } = await api<ReviewUrlResponse>(
+      const { url, expiresIn } = await api<ReviewUrlResponse>(
         'POST',
         `/v1/admin/results/${encodeURIComponent(resultId)}/review-url`,
       );
-      setReviewLink({ resultId, url });
+      setReviewLink({ resultId, url, expiresIn });
     });
 
   const onReview = (resultId: string, e: FormEvent<HTMLFormElement>) => {

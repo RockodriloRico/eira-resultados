@@ -20,7 +20,13 @@ export function PatientPortal() {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const [link, setLink] = useState<{ resultId: string; url: string }>();
+  const [link, setLink] = useState<{ resultId: string; url: string; expiresIn: number }>();
+
+  useEffect(() => {
+    if (!link) return;
+    const id = setTimeout(() => setLink(undefined), link.expiresIn * 1000);
+    return () => clearTimeout(id);
+  }, [link]);
 
   useEffect(() => {
     if (step.name !== 'pin') return;
@@ -98,12 +104,12 @@ export function PatientPortal() {
   const onDownload = (resultId: string) => {
     if (step.name !== 'results') return;
     void run(async () => {
-      const { url } = await api<DownloadUrlResponse>(
+      const { url, expiresIn } = await api<DownloadUrlResponse>(
         'POST',
         `/v1/results/${encodeURIComponent(resultId)}/download-url`,
         { token: step.token },
       );
-      setLink({ resultId, url });
+      setLink({ resultId, url, expiresIn });
     });
   };
 

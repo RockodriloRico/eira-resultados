@@ -77,6 +77,35 @@ describe('PatientPortal', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Código incorrecto o vencido');
   });
 
+  it('el enlace al PDF desaparece al vencer y se puede pedir uno nuevo', async () => {
+    mockFetch({
+      'POST /v1/access/request': () => ({ status: 202, body: challenge }),
+      'POST /v1/access/verify': () => ({ body: { token: 't'.repeat(43), expiresIn: 900 } }),
+      'GET /v1/results': () => ({
+        body: {
+          results: [
+            {
+              resultId: `res_${'a'.repeat(22)}`,
+              resultType: 'PAPANICOLAOU',
+              sampleDate: '2026-10-01',
+              availableAt: '',
+            },
+          ],
+        },
+      }),
+      [`POST /v1/results/res_${'a'.repeat(22)}/download-url`]: () => ({
+        body: { url: 'http://127.0.0.1:5173/local-documents?x', expiresIn: 0.05 },
+      }),
+    });
+    render(<PatientPortal />);
+    await identify();
+    fill('Código de 6 dígitos', '123456');
+    fireEvent.click(screen.getByRole('button', { name: 'Verificar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver PDF' }));
+    await screen.findByRole('link', { name: /Abrir PDF/ });
+    expect(await screen.findByRole('button', { name: 'Ver PDF' })).toBeEnabled();
+  });
+
   it('desde la pantalla del código se puede volver a corregir los datos', async () => {
     mockFetch({ 'POST /v1/access/request': () => ({ status: 202, body: challenge }) });
     render(<PatientPortal />);
