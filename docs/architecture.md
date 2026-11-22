@@ -2,7 +2,7 @@
 
 EIRA Resultados entrega resultados de Papanicolaou de forma digital, segura y trazable para EIRA Movimiento Rosa A.C.
 
-> Estado: etapa 0 (estructura base). Este documento describe el diseño aprobado; los componentes se implementan por etapas.
+> Estado: etapa 1 (infraestructura definida en `infrastructure/template.yaml`, **sin desplegar**). Las Lambdas son esqueletos que responden `501`; la lógica de negocio empieza en la etapa 2.
 
 ## Componentes
 
@@ -56,7 +56,7 @@ Diseño detallado (limitación de tasa, anti-enumeración, expiración, `demoPin
 
 - **Sin texto plano:** ni el PIN, ni el token de sesión, ni los secretos se almacenan o registran en claro. Los secretos HMAC viven en Secrets Manager.
 - **`demoPin`:** solo existe con `Stage=demo` y cuando el backend confirma en ejecución que usa `MockSmsProvider`. Nunca se guarda en DynamoDB ni aparece en logs. La plantilla SAM impide esta configuración en producción ([ADR-0003](adr/0003-demo-pin.md)).
-- **Documentos:** buckets privados, SSE-KMS, TLS obligatorio. El único camino de lectura es una URL firmada que emite el backend tras autorizar.
+- **Documentos:** buckets privados, SSE-KMS con una llave exclusiva ([ADR-0009](adr/0009-kms-y-secretos.md)), TLS obligatorio. El único camino de lectura es una URL firmada que emite el backend tras autorizar.
 - **Mínimo privilegio:** un rol IAM por Lambda.
 - **Auditoría:** `AuditLog` append-only a nivel de aplicación y permisos ([ADR-0004](adr/0004-auditlog-append-only.md)).
 - **Datos:** el proyecto usa exclusivamente datos sintéticos.
@@ -79,3 +79,4 @@ Diseño detallado (limitación de tasa, anti-enumeración, expiración, `demoPin
 | [0006](adr/0006-cognito-pkce.md)                 | Cognito con Authorization Code Flow + PKCE                 |
 | [0007](adr/0007-frontend-hosting-css-modules.md) | Hosting S3 + CloudFront OAC y CSS Modules                  |
 | [0008](adr/0008-limitacion-de-tasa.md)           | Limitación de tasa: API Gateway, WAF y límite por paciente |
+| [0009](adr/0009-kms-y-secretos.md)               | Dos llaves KMS y secretos generados por CloudFormation     |

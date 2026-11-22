@@ -1,12 +1,12 @@
 # Requisitos y versiones
 
-| Herramienta   | Versión                                   | Desde la etapa | Uso                                                                             |
-| ------------- | ----------------------------------------- | -------------- | ------------------------------------------------------------------------------- |
-| Node.js       | **24.x LTS** (≥ 24.15.0, `.nvmrc` = `24`) | 0              | Desarrollo, pruebas y build. Coincide con el runtime `nodejs24.x` de AWS Lambda |
-| npm           | ≥ 11 (incluido con Node 24)               | 0              | npm workspaces y `package-lock.json`                                            |
-| AWS SAM CLI   | ≥ 1.174.0                                 | 1              | `sam validate --lint`, `sam build`, `sam local` (**sin** `sam deploy`)          |
-| Docker        | Engine reciente                           | 1              | `sam local start-api` y DynamoDB Local                                          |
-| Python + pipx | 3.11+                                     | 1              | `cfn-lint` y `checkov` (también corren en CI)                                   |
+| Herramienta | Versión                                    | Desde la etapa | Uso                                                                             |
+| ----------- | ------------------------------------------ | -------------- | ------------------------------------------------------------------------------- |
+| Node.js     | **24.x LTS** (≥ 24.15.0, `.nvmrc` = `24`)  | 0              | Desarrollo, pruebas y build. Coincide con el runtime `nodejs24.x` de AWS Lambda |
+| npm         | ≥ 11 (incluido con Node 24)                | 0              | npm workspaces y `package-lock.json`                                            |
+| AWS SAM CLI | 1.174.0 (fijada en `requirements-sam.txt`) | 1              | `sam validate --lint`, `sam build`, `sam local` (**sin** `sam deploy`)          |
+| Docker      | Engine reciente                            | 1              | `sam local start-api` y DynamoDB Local                                          |
+| Python      | 3.10+ (CI usa 3.12)                        | 1              | Entornos virtuales para SAM CLI + cfn-lint 1.58.0 y Checkov 3.4.6 (separados)   |
 
 ## Por qué Node.js 24
 
@@ -23,10 +23,13 @@ Estos comandos **no** se han ejecutado en tu equipo. Devin solo los documenta.
 nvm install 24
 nvm use
 
-# AWS SAM CLI (a partir de la etapa 1). Instalador oficial:
-# https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html
-sam --version   # debe ser >= 1.174.0
+# AWS SAM CLI, cfn-lint y Checkov (etapa 1), en entornos virtuales de usuario, sin instalación global.
+# aws-sam-cli y checkov tienen dependencias incompatibles, por eso van en entornos separados.
+python3 -m venv ~/.venvs/eira-sam && ~/.venvs/eira-sam/bin/pip install -r infrastructure/requirements-sam.txt
+python3 -m venv ~/.venvs/eira-checkov && ~/.venvs/eira-checkov/bin/pip install -r infrastructure/requirements-checkov.txt
 ```
+
+Comandos de infraestructura: ver [infrastructure/README.md](../infrastructure/README.md).
 
 No se requieren credenciales de AWS para ninguna etapa de desarrollo local ni para CI.
 

@@ -24,6 +24,15 @@ export default tseslint.config(
     ...security.configs.recommended,
   },
   {
+    files: ['infrastructure/**/*.ts'],
+    languageOptions: { globals: globals.node },
+  },
+  {
+    // La plantilla CloudFormation analizada no tiene tipos; las pruebas la recorren como JSON.
+    files: ['infrastructure/tests/**/*.ts'],
+    rules: { '@typescript-eslint/no-explicit-any': 'off' },
+  },
+  {
     files: ['frontend/**/*.{ts,tsx}'],
     languageOptions: { globals: globals.browser },
     plugins: { 'react-hooks': reactHooks, 'react-refresh': reactRefresh },

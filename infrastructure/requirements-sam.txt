@@ -1,0 +1,2 @@
+aws-sam-cli==1.174.0
+cfn-lint==1.58.0

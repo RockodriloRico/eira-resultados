@@ -1,5 +1,7 @@
 # backend/src
 
+Etapa 1: `handlers/notImplemented.ts` (responde 501) y `handlers/denyAllAuthorizer.ts` (deniega todo) son esqueletos sin lógica de negocio.
+
 Estructura prevista (se implementa a partir de la etapa 2):
 
 - `handlers/public/` — endpoints de la paciente.

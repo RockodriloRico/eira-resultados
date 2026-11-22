@@ -11,7 +11,7 @@ Plataforma de entrega digital segura y trazable de resultados para EIRA Movimien
 ├── frontend/            # React + TypeScript + Vite (CSS Modules)
 ├── backend/             # AWS Lambda (Node.js 24, TypeScript)
 ├── packages/shared/     # Contratos y constantes compartidas (@eira/shared)
-├── infrastructure/      # AWS SAM (plantilla a partir de la etapa 1)
+├── infrastructure/      # AWS SAM: plantilla, pruebas y DynamoDB Local (sin despliegue)
 ├── scripts/             # Utilidades locales (datos sintéticos)
 ├── docs/                # Arquitectura, modelo de datos, requisitos y ADRs
 └── .github/workflows/   # CI sin despliegue
@@ -20,7 +20,7 @@ Plataforma de entrega digital segura y trazable de resultados para EIRA Movimien
 ## Requisitos
 
 - Node.js **24.x LTS** (ver `.nvmrc`) y npm ≥ 11.
-- AWS SAM CLI ≥ 1.174.0 y Docker, solo a partir de la etapa 1.
+- AWS SAM CLI 1.174.0, Python 3.10+ y Docker para la infraestructura (etapa 1).
 
 Detalles e instalación: [docs/requirements.md](docs/requirements.md).
 
@@ -42,8 +42,8 @@ npm run dev -w @eira/frontend  # http://localhost:5173
 
 | Etapa | Alcance                                              | Estado      |
 | ----- | ---------------------------------------------------- | ----------- |
-| 0     | Estructura base, lint, pruebas, CI                   | En revisión |
-| 1     | Plantilla AWS SAM (sin desplegar)                    | Pendiente   |
+| 0     | Estructura base, lint, pruebas, CI                   | Completada  |
+| 1     | Plantilla AWS SAM (sin desplegar)                    | En revisión |
 | 2     | Núcleo de seguridad (PIN, HMAC, SMS mock)            | Pendiente   |
 | 3     | API de paciente                                      | Pendiente   |
 | 4     | Frontend de paciente                                 | Pendiente   |
