@@ -79,6 +79,62 @@ describe('AdminPortal', () => {
     });
   });
 
+  it('un reintento tras cargar el mismo archivo completa submit aunque el PUT se rechace', async () => {
+    const calls = mockFetch({
+      'GET /v1/admin/patients': () => ({ body: patient }),
+      [`GET /v1/admin/patients/${patientId}/results`]: () => ({
+        body: { results: [result('CREATED')] },
+      }),
+      [`POST /v1/admin/results/${resultId}/upload-url`]: () => ({
+        body: {
+          url: '/local-documents/upload',
+          method: 'PUT',
+          headers: {},
+          expiresIn: 300,
+          version: 1,
+        },
+      }),
+      'PUT /local-documents/upload': () => ({ status: 403 }),
+      [`POST /v1/admin/results/${resultId}/submit`]: () => ({ body: result('PENDING_REVIEW') }),
+    });
+    render(<AdminPortal />);
+    const card = await findPatient();
+    const pdf = new File([new Uint8Array([37, 80, 68, 70])], 'r.pdf', { type: 'application/pdf' });
+    fireEvent.change(within(card).getByLabelText('Cargar PDF'), { target: { files: [pdf] } });
+    expect(await screen.findByText(/verificado \(SHA-256\)/)).toBeInTheDocument();
+    expect(calls.some((c) => c.key.endsWith('/submit'))).toBe(true);
+  });
+
+  it('si el PUT se rechaza y submit no encuentra el archivo, informa el rechazo', async () => {
+    mockFetch({
+      'GET /v1/admin/patients': () => ({ body: patient }),
+      [`GET /v1/admin/patients/${patientId}/results`]: () => ({
+        body: { results: [result('CREATED')] },
+      }),
+      [`POST /v1/admin/results/${resultId}/upload-url`]: () => ({
+        body: {
+          url: '/local-documents/upload',
+          method: 'PUT',
+          headers: {},
+          expiresIn: 300,
+          version: 1,
+        },
+      }),
+      'PUT /local-documents/upload': () => ({ status: 403 }),
+      [`POST /v1/admin/results/${resultId}/submit`]: () => ({
+        status: 409,
+        body: { message: 'x' },
+      }),
+    });
+    render(<AdminPortal />);
+    const card = await findPatient();
+    const pdf = new File([new Uint8Array([37, 80, 68, 70])], 'r.pdf', { type: 'application/pdf' });
+    fireEvent.change(within(card).getByLabelText('Cargar PDF'), { target: { files: [pdf] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'El almacenamiento rechazó el archivo',
+    );
+  });
+
   it('Aprobar exige las tres verificaciones; corrección envía la nota', async () => {
     const calls = mockFetch({
       'GET /v1/admin/patients': () => ({ body: patient }),

@@ -112,10 +112,15 @@ export function AdminPortal() {
         body: bytes,
         credentials: 'omit',
       });
-      if (!put.ok) throw new ApiError(0, 'El almacenamiento rechazó el archivo');
-      await api('POST', `/v1/admin/results/${encodeURIComponent(resultId)}/submit`, {
-        body: spec,
-      });
+      // Si el PUT falla porque el mismo archivo ya se cargó en un intento anterior, submit lo
+      // verifica igualmente por tamaño y SHA-256; solo si submit falla se informa el rechazo.
+      try {
+        await api('POST', `/v1/admin/results/${encodeURIComponent(resultId)}/submit`, {
+          body: spec,
+        });
+      } catch (e) {
+        throw put.ok ? e : new ApiError(0, 'El almacenamiento rechazó el archivo');
+      }
       await reload();
       setNotice('Documento cargado y verificado (SHA-256). Pendiente de revisión.');
     });
