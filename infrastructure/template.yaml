@@ -1430,6 +1430,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-request
+      Handler: accessRequest.handler
       Role: !GetAtt AccessRequestRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessRequestLogGroup
@@ -1467,6 +1468,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-resend
+      Handler: accessResend.handler
       Role: !GetAtt AccessResendRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessResendLogGroup
@@ -1503,6 +1505,7 @@ Resources:
             comment: Firma de código se evaluará antes del primer despliegue.
     Properties:
       FunctionName: !Sub eira-${Stage}-access-verify
+      Handler: accessVerify.handler
       Role: !GetAtt AccessVerifyRole.Arn
       LoggingConfig:
         LogGroup: !Ref AccessVerifyLogGroup

@@ -538,6 +538,12 @@ describe('Lambda: esqueletos Node.js 24 / arm64', () => {
     expect(R.SessionAuthorizerFunction!.Properties!.Handler).toBe('denyAllAuthorizer.handler');
   });
 
+  it('las rutas de acceso de la entrega 2 usan sus handlers reales', () => {
+    expect(R.AccessRequestFunction!.Properties!.Handler).toBe('accessRequest.handler');
+    expect(R.AccessResendFunction!.Properties!.Handler).toBe('accessResend.handler');
+    expect(R.AccessVerifyFunction!.Properties!.Handler).toBe('accessVerify.handler');
+  });
+
   it('demoPin depende de ExposeDemoPin y no hay permisos SNS', () => {
     for (const [id, fn] of resourcesOfType(t, 'AWS::Serverless::Function')) {
       const flag = fn.Properties!.Environment?.Variables?.DEMO_PIN_ENABLED;

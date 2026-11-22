@@ -211,14 +211,16 @@ Si los datos no coinciden (o el expediente está deshabilitado o sin cupo), se c
 
 1. **Mismo trabajo en ambos caminos:**
    - Siempre se calculan los tres HMAC (folio, nombre, fecha).
-   - Siempre se hace el `Query` al GSI `FolioHashIndex`, que proyecta los atributos necesarios, sin `GetItem` adicional.
+   - Siempre se hace el `Query` al GSI `FolioHashIndex` (solo claves) y después un `GetItem` consistente; si no hay coincidencia, el `GetItem` se hace sobre un `patientId` ficticio que no existe.
    - Si no hay expediente, se compara contra hashes ficticios con `timingSafeEqual`.
    - Siempre se escribe un ítem en `PinChallenges`.
 2. **Tiempo mínimo de respuesta:** `requestAccess` y `resendPin` esperan hasta un piso fijo (`MIN_RESPONSE_MS`, inicial 1000 ms) más un jitter aleatorio de 0–50 ms. El piso cubre lo que solo hace el camino real (actualización condicional del contador y envío por `SmsProvider`).
 3. **Vigilancia:** si el camino real supera el piso, se emite la métrica `ResponseFloorExceeded` con alarma en CloudWatch y el piso se ajusta. Con `AwsSnsSmsProvider` (futuro) se evaluará enviar el SMS de forma asíncrona.
 4. `verifyPin` no necesita piso: un PIN incorrecto sigue el mismo camino (`GetItem` → comparación → `UpdateItem`) en retos reales y señuelo. El éxito ya es observable por definición.
 
-### 2.4 Pruebas previstas (etapa 3)
+### 2.4 Pruebas
+
+Implementadas en la etapa 2 (`backend/tests/integration/access.integration.test.ts`); la prueba estadística de tiempos sigue pendiente:
 
 - Igualdad estricta de status, encabezados y cuerpo (salvo `challengeId`) entre los casos inexistente, no coincidente, deshabilitado, límite alcanzado y válido.
 - Prueba estadística de tiempos: distribuciones de N solicitudes por caso, con diferencia de medianas menor a un umbral.
@@ -267,6 +269,8 @@ Ver [ADR-0003](adr/0003-demo-pin.md) para la decisión completa. Resumen de los 
 ## 5. Concurrencia y escrituras condicionales
 
 Todas las transiciones de estado de un reto o una sesión son **escrituras condicionales atómicas**. Las lecturas previas usan `ConsistentRead: true`.
+
+**IAM y transacciones:** IAM no tiene una acción propia para `TransactWriteItems`; evalúa cada elemento con el permiso de la operación equivalente (`PutItem`, `UpdateItem`), incluidas las condiciones `dynamodb:Attributes` y `dynamodb:ReturnValues`. Por eso los roles de acceso no necesitan permisos nuevos. Si la transacción se cancela por un conflicto (`TransactionConflict`), se reintenta hasta 3 veces releyendo el contador; si no se logra, la respuesta es la de un señuelo (falla cerrado, sin SMS).
 
 ### 5.1 `verifyPin`
 
@@ -331,7 +335,7 @@ En retos reales, este `Update` va en la misma `TransactWriteItems` que el contad
 
 `GetItem Results` + comprobación de `patientId` y `status`. Después, `PutItem AuditLog` (`DOWNLOAD_URL_ISSUED`) **antes** de firmar la URL. Si la auditoría falla, no se emite URL (fail-closed).
 
-### 5.6 Pruebas previstas (etapa 3, DynamoDB Local)
+### 5.6 Pruebas (DynamoDB Local, implementadas en la etapa 2)
 
 - 20 `verify` incorrectos en paralelo → `attempts == 5`.
 - 10 `verify` correctos en paralelo → exactamente 1 sesión.
