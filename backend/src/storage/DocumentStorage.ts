@@ -185,7 +185,11 @@ export class LocalDocumentStorage implements DocumentStorage {
     });
     return {
       url: `${this.baseUrl}/local-documents/upload?${params.toString()}`,
-      headers: { 'content-type': 'application/pdf', 'x-amz-checksum-sha256': spec.sha256 },
+      headers: {
+        'content-type': 'application/pdf',
+        'x-amz-checksum-sha256': spec.sha256,
+        'if-none-match': '*',
+      },
     };
   }
 

@@ -27,7 +27,9 @@
     "infra:checkov": "npm run checkov -w @eira/infrastructure",
     "dynamodb:up": "npm run dynamodb:up -w @eira/infrastructure",
     "dynamodb:down": "npm run dynamodb:down -w @eira/infrastructure",
-    "test:integration": "npm run test:integration -w @eira/infrastructure && npm run test:integration -w @eira/backend"
+    "test:integration": "npm run test:integration -w @eira/infrastructure && npm run test:integration -w @eira/backend",
+    "demo:api": "node backend/src/local/start.ts",
+    "demo": "npm run dynamodb:up && node scripts/demo.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

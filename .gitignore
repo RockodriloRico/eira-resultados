@@ -21,3 +21,6 @@ samconfig.local.toml
 .vscode/*
 !.vscode/extensions.json
 *.log
+
+# Datos de la demo local (sintéticos, generados al ejecutar)
+.local-data/
