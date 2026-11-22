@@ -38,7 +38,6 @@ describe('PatientPortal', () => {
         body: { url: 'http://127.0.0.1:5173/local-documents?x', expiresIn: 60 },
       }),
     });
-    const open = vi.spyOn(window, 'open').mockReturnValue(null);
     render(<PatientPortal />);
     await identify();
     expect(screen.getByTestId('demo-pin')).toHaveTextContent('123456');
@@ -46,13 +45,9 @@ describe('PatientPortal', () => {
     fill('Código de 6 dígitos', '123456');
     fireEvent.click(screen.getByRole('button', { name: 'Verificar' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Ver PDF' }));
-    await vi.waitFor(() =>
-      expect(open).toHaveBeenCalledWith(
-        'http://127.0.0.1:5173/local-documents?x',
-        '_blank',
-        'noopener,noreferrer',
-      ),
-    );
+    const link = await screen.findByRole('link', { name: /Abrir PDF/ });
+    expect(link).toHaveAttribute('href', 'http://127.0.0.1:5173/local-documents?x');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
     const download = calls.find((c) => c.key.endsWith('/download-url'))!;
     expect((download.init!.headers as Record<string, string>).authorization).toBe(
       `Bearer ${'t'.repeat(43)}`,

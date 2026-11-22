@@ -20,6 +20,7 @@ export function PatientPortal() {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [link, setLink] = useState<{ resultId: string; url: string }>();
 
   useEffect(() => {
     if (step.name !== 'pin') return;
@@ -91,13 +92,14 @@ export function PatientPortal() {
         `/v1/results/${encodeURIComponent(resultId)}/download-url`,
         { token: step.token },
       );
-      window.open(url, '_blank', 'noopener,noreferrer');
+      setLink({ resultId, url });
     });
   };
 
   const onLogout = () => {
     if (step.name !== 'results') return;
     const { token } = step;
+    setLink(undefined);
     setStep({ name: 'identify' });
     void api('POST', '/v1/access/logout', { token }).catch(() => undefined);
   };
@@ -188,9 +190,15 @@ export function PatientPortal() {
                     {r.resultType === 'PAPANICOLAOU' ? 'Papanicolaou' : r.resultType} · muestra del{' '}
                     {r.sampleDate}
                   </span>
-                  <button type="button" onClick={() => onDownload(r.resultId)} disabled={busy}>
-                    Ver PDF
-                  </button>
+                  {link?.resultId === r.resultId ? (
+                    <a href={link.url} target="_blank" rel="noopener noreferrer">
+                      Abrir PDF (vence en 60 s)
+                    </a>
+                  ) : (
+                    <button type="button" onClick={() => onDownload(r.resultId)} disabled={busy}>
+                      Ver PDF
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>

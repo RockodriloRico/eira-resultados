@@ -25,6 +25,7 @@ export function AdminPortal() {
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [reviewLink, setReviewLink] = useState<{ resultId: string; url: string }>();
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -46,6 +47,7 @@ export function AdminPortal() {
     );
     setPatient(p);
     setResults(list.results);
+    setReviewLink(undefined);
     setAudit(undefined);
   }
   const reload = () => (patient ? open(patient) : Promise.resolve());
@@ -125,7 +127,7 @@ export function AdminPortal() {
         'POST',
         `/v1/admin/results/${encodeURIComponent(resultId)}/review-url`,
       );
-      window.open(url, '_blank', 'noopener,noreferrer');
+      setReviewLink({ resultId, url });
     });
 
   const onReview = (resultId: string, e: FormEvent<HTMLFormElement>) => {
@@ -251,14 +253,20 @@ export function AdminPortal() {
                 )}
                 {r.status === 'PENDING_REVIEW' && (
                   <form className={styles.form} onSubmit={(e) => onReview(r.resultId, e)}>
-                    <button
-                      type="button"
-                      className={styles.secondary}
-                      onClick={() => onViewPdf(r.resultId)}
-                      disabled={busy}
-                    >
-                      Ver PDF (60 s)
-                    </button>
+                    {reviewLink?.resultId === r.resultId ? (
+                      <a href={reviewLink.url} target="_blank" rel="noopener noreferrer">
+                        Abrir PDF para revisión (vence en 60 s)
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        className={styles.secondary}
+                        onClick={() => onViewPdf(r.resultId)}
+                        disabled={busy}
+                      >
+                        Ver PDF (60 s)
+                      </button>
+                    )}
                     <ReviewChecks />
                   </form>
                 )}
