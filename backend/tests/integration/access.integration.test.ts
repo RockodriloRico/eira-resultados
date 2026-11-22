@@ -18,7 +18,8 @@ const meta = { requestId: 'req', sourceIp: '203.0.113.10', userAgent: 'vitest' }
 const PIN_RE = /\b(\d{6})\b/;
 
 let env: TestEnv;
-let nowMs = Date.parse('2026-06-01T12:00:00Z');
+// Reloj basado en la hora real: DynamoDB Local aplica TTL y borraría retos con fechas pasadas.
+let nowMs = Date.now();
 const clock = () => new Date(nowMs);
 const advance = (seconds: number) => {
   nowMs += seconds * 1000;
@@ -213,6 +214,35 @@ describe('solicitud de PIN', () => {
     await app.access.request(anaIdentity, meta);
     expect(sms.outbox).toHaveLength(6);
     expect((await getPatient(ids.get(ANA.folio)!)).pinRequestCount).toBe(1);
+  });
+});
+
+describe('demoPin en reenvíos rechazados', () => {
+  it('un reenvío de expediente deshabilitado no devuelve un PIN válido', async () => {
+    const demo = containerFor('demo', true);
+    const id = ids.get(BEA.folio)!;
+    const res = await demo.access.request(BEA, meta);
+    const setStatus = (status: string) =>
+      env.db.send(
+        new UpdateCommand({
+          TableName: env.config.tables.patients,
+          Key: { patientId: id },
+          UpdateExpression: 'SET #s = :v',
+          ExpressionAttributeNames: { '#s': 'status' },
+          ExpressionAttributeValues: { ':v': status },
+        }),
+      );
+    await setStatus('DISABLED');
+    advance(SECURITY_POLICY.pinResendCooldownSeconds);
+    const resent = await demo.access.resend(res.challengeId, meta);
+    await setStatus('ACTIVE');
+    await expect(
+      demo.access.verify({ challengeId: res.challengeId, pin: resent.demoPin! }, meta),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    await expect(
+      demo.access.verify({ challengeId: res.challengeId, pin: res.demoPin! }, meta),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(await sessionsFor(res.challengeId)).toHaveLength(0);
   });
 });
 

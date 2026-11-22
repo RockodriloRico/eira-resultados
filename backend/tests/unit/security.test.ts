@@ -86,6 +86,9 @@ describe('configuración', () => {
   });
 
   it('prod rechaza el proveedor mock', () => {
-    expect(() => loadConfig({ STAGE: 'prod' })).toThrow();
+    expect(() => loadConfig({ STAGE: 'prod', SMS_PROVIDER: 'mock' })).toThrow();
+    // Funciones sin SMS_PROVIDER (p. ej. verify) arrancan en prod y nunca usan mock.
+    expect(loadConfig({ STAGE: 'prod' }).smsProvider).toBe('sns');
+    expect(loadConfig({ STAGE: 'prod' }).demoPinEnabled).toBe(false);
   });
 });

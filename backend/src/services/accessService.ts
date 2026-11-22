@@ -395,7 +395,8 @@ export class AccessService {
         reasonCode: eligible ? 'RATE_LIMITED' : 'DISABLED',
         ...audit,
       });
-      return this.challengeResponse(challengeId, unknownPin);
+      // demoPin también aleatorio y distinto del guardado: en demo tampoco permite entrar.
+      return this.challengeResponse(challengeId, randomPin());
     }
 
     await this.applyDecoyResend(update(pinHmac(pinSecret, challengeId, pin), now));

@@ -22,7 +22,11 @@ const STAGES: readonly Stage[] = ['local', 'dev', 'demo', 'prod'];
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const stage = (env.STAGE ?? 'local') as Stage;
   if (!STAGES.includes(stage)) throw new Error(`STAGE no válido: ${stage}`);
-  const smsProvider = env.SMS_PROVIDER === 'sns' ? 'sns' : 'mock';
+  // Sin SMS_PROVIDER (funciones que no envían SMS), prod nunca cae en mock.
+  const smsProvider =
+    env.SMS_PROVIDER === 'mock' || (env.SMS_PROVIDER === undefined && stage !== 'prod')
+      ? 'mock'
+      : 'sns';
   if (stage === 'prod' && smsProvider === 'mock') {
     throw new Error('Stage=prod no admite SmsProvider=mock');
   }
