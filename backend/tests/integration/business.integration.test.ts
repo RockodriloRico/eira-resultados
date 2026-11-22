@@ -170,6 +170,30 @@ describe('resultados y máquina de estados', () => {
     expect(items.length).toBeGreaterThan(0);
     for (const item of items) expect(item).not.toHaveProperty('s3Key');
   });
+
+  it('el listado filtrado pagina: un aprobado antiguo no se pierde tras más de 100 resultados', async () => {
+    const patientId = `pat_${'p'.repeat(22)}`;
+    const base = Date.parse('2026-01-01T00:00:00Z');
+    const put = (i: number, status: string) =>
+      env.db.send(
+        new PutCommand({
+          TableName: env.config.tables.results,
+          Item: {
+            resultId: `res_${String(i).padStart(22, '0')}`,
+            patientId,
+            status,
+            createdAt: new Date(base + i * 1000).toISOString(),
+            version: 1,
+          },
+        }),
+      );
+    await put(0, 'APPROVED');
+    for (let i = 1; i <= 150; i += 25)
+      await Promise.all(Array.from({ length: 25 }, (_, j) => put(i + j, 'CREATED')));
+    const approved = await env.repos.results.listByPatient(patientId, 'APPROVED');
+    expect(approved.map((r) => r.resultId)).toEqual([`res_${'0'.repeat(22)}`]);
+    expect(await env.repos.results.listByPatient(patientId)).toHaveLength(151);
+  });
 });
 
 describe('auditoría', () => {

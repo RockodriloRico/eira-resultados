@@ -63,19 +63,29 @@ export class ResultsRepository {
 
   /** PatientIndex no proyecta s3Key: el listado nunca expone la ubicación del documento. */
   async listByPatient(patientId: string, status?: ResultStatus): Promise<PatientIndexItem[]> {
-    const out = await this.db.send(
-      new QueryCommand({
-        TableName: this.table,
-        IndexName: 'PatientIndex',
-        KeyConditionExpression: 'patientId = :p',
-        FilterExpression: status ? '#s = :s' : undefined,
-        ExpressionAttributeNames: status ? { '#s': 'status' } : undefined,
-        ExpressionAttributeValues: status ? { ':p': patientId, ':s': status } : { ':p': patientId },
-        ScanIndexForward: false,
-        Limit: 100,
-      }),
-    );
-    return (out.Items ?? []) as PatientIndexItem[];
+    // Limit se aplica antes del filtro: se pagina hasta agotar LastEvaluatedKey.
+    const items: PatientIndexItem[] = [];
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const out = await this.db.send(
+        new QueryCommand({
+          TableName: this.table,
+          IndexName: 'PatientIndex',
+          KeyConditionExpression: 'patientId = :p',
+          FilterExpression: status ? '#s = :s' : undefined,
+          ExpressionAttributeNames: status ? { '#s': 'status' } : undefined,
+          ExpressionAttributeValues: status
+            ? { ':p': patientId, ':s': status }
+            : { ':p': patientId },
+          ScanIndexForward: false,
+          Limit: 100,
+          ExclusiveStartKey: startKey,
+        }),
+      );
+      items.push(...((out.Items ?? []) as PatientIndexItem[]));
+      startKey = out.LastEvaluatedKey;
+    } while (startKey);
+    return items;
   }
 
   /**
