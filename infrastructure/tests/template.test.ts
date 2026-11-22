@@ -250,6 +250,11 @@ describe('S3 y CloudFront', () => {
       StringNotEqualsIfExists: { 's3:x-amz-server-side-encryption': 'aws:kms' },
     });
     expect(json(bySid.DenyOtherKmsKeys.Condition)).toContain('DocumentsKey');
+    expect(bySid.DenyOverwrite).toMatchObject({
+      Effect: 'Deny',
+      Action: 's3:PutObject',
+      Condition: { Null: { 's3:if-none-match': 'true' } },
+    });
     expect(bySid.ReadOnlyByAuthorizedRoles.Effect).toBe('Deny');
     expect(
       bySid.ReadOnlyByAuthorizedRoles.Condition.ArnNotEquals['aws:PrincipalArn'].map(

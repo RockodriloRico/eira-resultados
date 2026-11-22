@@ -47,6 +47,7 @@ describe('S3DocumentStorage.uploadUrl', () => {
         'content-type',
         'x-amz-checksum-sha256',
         'x-amz-meta-sha256',
+        'if-none-match',
         'x-amz-server-side-encryption',
         'x-amz-server-side-encryption-aws-kms-key-id',
       ]),

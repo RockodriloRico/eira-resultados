@@ -489,6 +489,15 @@ Resources:
             Condition:
               StringNotEqualsIfExists:
                 s3:x-amz-server-side-encryption: aws:kms
+          # Los documentos no se sobrescriben: toda escritura debe ser condicional (If-None-Match).
+          - Sid: DenyOverwrite
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DocumentsBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:if-none-match: 'true'
           - Sid: DenyOtherKmsKeys
             Effect: Deny
             Principal: '*'

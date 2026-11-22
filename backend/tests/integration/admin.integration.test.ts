@@ -273,6 +273,27 @@ describe('carga, integridad y revisión de documentos', () => {
     expect((await env.repos.results.get(result.resultId))!.s3Key).toMatch(/\/v2\.pdf$/);
   });
 
+  it('una URL de carga pendiente no reemplaza el documento aprobado', async () => {
+    const { result } = await newResult('ADM-0008');
+    const pdf = syntheticPdf(['revisado']);
+    const spec = { sha256: sha256Base64(pdf), sizeBytes: pdf.byteLength };
+    const other = syntheticPdf(['no revisado']);
+    const otherSpec = { sha256: sha256Base64(other), sizeBytes: other.byteLength };
+    const pending = await app.documents.uploadUrl(result.resultId, otherSpec, admin);
+    await upload(result.resultId, pdf);
+    await app.documents.submit(result.resultId, spec, admin);
+    await app.results.review(
+      result.resultId,
+      { decision: 'APPROVE', checks: { correspondence: true, integrity: true, legibility: true } },
+      admin,
+    );
+    const params = new URL(pending.url).searchParams;
+    expect(await storage.acceptUpload(params, otherSpec.sha256, other)).toBe(false);
+    expect(await storage.head((await env.repos.results.get(result.resultId))!.s3Key!)).toEqual(
+      spec,
+    );
+  });
+
   it('no se emite URL de carga en PENDING_REVIEW ni para resultados inexistentes', async () => {
     const { result } = await newResult('ADM-0006');
     const { spec } = await upload(result.resultId, syntheticPdf(['x']));

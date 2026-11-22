@@ -58,6 +58,7 @@ export class S3DocumentStorage implements DocumentStorage {
         ContentType: 'application/pdf',
         ServerSideEncryption: 'aws:kms',
         SSEKMSKeyId: this.kmsKeyArn,
+        IfNoneMatch: '*',
       }),
     );
   }
@@ -87,6 +88,8 @@ export class S3DocumentStorage implements DocumentStorage {
       'content-type': 'application/pdf',
       'x-amz-checksum-sha256': spec.sha256,
       'x-amz-meta-sha256': spec.sha256,
+      // Escritura condicional: una URL pendiente no puede reemplazar un documento ya cargado.
+      'if-none-match': '*',
       'x-amz-server-side-encryption': 'aws:kms',
       'x-amz-server-side-encryption-aws-kms-key-id': this.kmsKeyArn,
     };
@@ -99,6 +102,7 @@ export class S3DocumentStorage implements DocumentStorage {
         ContentLength: spec.sizeBytes,
         ChecksumSHA256: spec.sha256,
         Metadata: { sha256: spec.sha256 },
+        IfNoneMatch: '*',
         ServerSideEncryption: 'aws:kms',
         SSEKMSKeyId: this.kmsKeyArn,
       }),
@@ -198,6 +202,7 @@ export class LocalDocumentStorage implements DocumentStorage {
     if (!safeEqual(sig, this.sign(`upload:${key}:${size}:${checksum}`, exp))) return false;
     if (exp <= Math.floor(this.clock().getTime() / 1000)) return false;
     if (body.byteLength !== size || sha256Base64(body) !== checksum) return false;
+    if (await this.head(key)) return false; // imita If-None-Match: * de S3
     await this.put(key, body);
     return true;
   }
