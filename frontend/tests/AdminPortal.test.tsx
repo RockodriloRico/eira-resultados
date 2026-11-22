@@ -179,4 +179,51 @@ describe('AdminPortal', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Solo se aceptan archivos PDF');
     expect(calls.some((c) => c.key.endsWith('/upload-url'))).toBe(false);
   });
+
+  it('auditoría: pagina con el cursor y agrega los eventos', async () => {
+    const calls = mockFetch({
+      'GET /v1/admin/patients': () => ({ body: patient }),
+      [`GET /v1/admin/patients/${patientId}/results`]: () => ({ body: { results: [] } }),
+      'GET /v1/admin/audit': () =>
+        calls.at(-1)!.url.includes('cursor=')
+          ? {
+              body: {
+                items: [
+                  {
+                    eventId: 'e2',
+                    occurredAt: '',
+                    eventType: 'AUDIT_QUERIED',
+                    outcome: 'SUCCESS',
+                    actorType: 'ADMIN',
+                  },
+                ],
+              },
+            }
+          : {
+              body: {
+                items: [
+                  {
+                    eventId: 'e1',
+                    occurredAt: '',
+                    eventType: 'AUDIT_QUERIED',
+                    outcome: 'SUCCESS',
+                    actorType: 'ADMIN',
+                  },
+                ],
+                cursor: 'abc',
+              },
+            },
+    });
+    render(<AdminPortal />);
+    const form = screen.getByRole('form', { name: 'Buscar expediente' });
+    fireEvent.change(within(form).getByLabelText('Folio exacto'), {
+      target: { value: 'SINT-0001' },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Buscar' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Ver auditoría/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cargar más eventos' }));
+    await vi.waitFor(() => expect(screen.getAllByText('AUDIT_QUERIED')).toHaveLength(2));
+    expect(screen.queryByRole('button', { name: 'Cargar más eventos' })).toBeNull();
+    expect(calls.at(-1)!.url).toContain(`patientId=${patientId}`);
+  });
 });

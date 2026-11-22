@@ -22,6 +22,7 @@ export function AdminPortal() {
   const [patient, setPatient] = useState<AdminPatientView>();
   const [results, setResults] = useState<AdminResultView[]>([]);
   const [audit, setAudit] = useState<AuditEventView[]>();
+  const [auditQuery, setAuditQuery] = useState<{ params: URLSearchParams; cursor?: string }>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -49,6 +50,7 @@ export function AdminPortal() {
     setResults(list.results);
     setReviewLink(undefined);
     setAudit(undefined);
+    setAuditQuery(undefined);
   }
   const reload = () => (patient ? open(patient) : Promise.resolve());
 
@@ -162,8 +164,27 @@ export function AdminPortal() {
       const to = new Date(Date.now() + 60_000).toISOString();
       const from = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
       const params = new URLSearchParams({ patientId: patient.patientId, from, to });
-      const res = await api<{ items: AuditEventView[] }>('GET', `/v1/admin/audit?${params}`);
+      const res = await api<{ items: AuditEventView[]; cursor?: string }>(
+        'GET',
+        `/v1/admin/audit?${params}`,
+      );
       setAudit(res.items);
+      setAuditQuery(res.cursor ? { params, cursor: res.cursor } : undefined);
+    });
+  };
+
+  const onAuditMore = () => {
+    if (!auditQuery?.cursor) return;
+    const { params, cursor } = auditQuery;
+    void run(async () => {
+      const page = new URLSearchParams(params);
+      page.set('cursor', cursor);
+      const res = await api<{ items: AuditEventView[]; cursor?: string }>(
+        'GET',
+        `/v1/admin/audit?${page}`,
+      );
+      setAudit((prev) => [...(prev ?? []), ...res.items]);
+      setAuditQuery(res.cursor ? { params, cursor: res.cursor } : undefined);
     });
   };
 
@@ -305,6 +326,16 @@ export function AdminPortal() {
                 ))}
               </tbody>
             </table>
+          )}
+          {auditQuery?.cursor && (
+            <button
+              type="button"
+              className={styles.secondary}
+              onClick={onAuditMore}
+              disabled={busy}
+            >
+              Cargar más eventos
+            </button>
           )}
         </div>
       )}
