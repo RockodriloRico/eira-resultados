@@ -6,7 +6,7 @@ import {
 } from '@eira/shared';
 import { HttpError } from '../http/responses.ts';
 import { randomId } from '../security/crypto.ts';
-import type { AuditRepository } from '../repositories/auditRepository.ts';
+import type { AuditInput, AuditRepository } from '../repositories/auditRepository.ts';
 import { isConditionFailure } from '../repositories/db.ts';
 import type { PatientsRepository } from '../repositories/patientsRepository.ts';
 import type { ResultRecord, ResultsRepository } from '../repositories/resultsRepository.ts';
@@ -62,16 +62,18 @@ export class ResultService {
       updatedAt: now,
       createdBy: meta.adminId,
     };
-    await results.create(record);
-    await audit.append({
-      eventType: 'RESULT_CREATED',
-      outcome: 'SUCCESS',
-      actorType: 'ADMIN',
-      actorId: meta.adminId,
-      patientId: record.patientId,
-      resultId: record.resultId,
-      requestId: meta.requestId,
-    });
+    await results.create(
+      record,
+      audit.transactPut({
+        eventType: 'RESULT_CREATED',
+        outcome: 'SUCCESS',
+        actorType: 'ADMIN',
+        actorId: meta.adminId,
+        patientId: record.patientId,
+        resultId: record.resultId,
+        requestId: meta.requestId,
+      }),
+    );
     return toAdminResultView(record);
   }
 
@@ -91,6 +93,7 @@ export class ResultService {
   async applyEvent(
     record: ResultRecord,
     event: ResultEvent,
+    auditInput: Omit<AuditInput, 'patientId' | 'resultId'>,
     changes: { set?: Record<string, unknown>; remove?: string[] } = {},
   ): Promise<ResultRecord> {
     const to = nextResultStatus(record.status, event);
@@ -104,17 +107,23 @@ export class ResultService {
         expectedVersion: record.version,
         ...changes,
         now,
+        auditItem: this.deps.audit.transactPut(
+          { ...auditInput, patientId: record.patientId, resultId: record.resultId },
+          now,
+        ),
       });
     } catch (error) {
       if (isConditionFailure(error)) throw new HttpError(409, CONFLICT);
       throw error;
     }
-    return {
+    const updated: Record<string, unknown> = {
       ...record,
-      ...(changes.set as Partial<ResultRecord>),
+      ...changes.set,
       status: to,
       updatedAt: now.toISOString(),
     };
+    for (const key of changes.remove ?? []) Reflect.deleteProperty(updated, key);
+    return updated as ResultRecord;
   }
 
   /** Revisión administrativa: correspondencia, integridad y legibilidad. Sin validación clínica. */
@@ -129,24 +138,29 @@ export class ResultService {
       throw new HttpError(400, 'Indica el motivo de la corrección');
     }
     const now = this.deps.clock().toISOString();
+    const auditInput = {
+      outcome: 'SUCCESS' as const,
+      actorType: 'ADMIN' as const,
+      actorId: meta.adminId,
+      requestId: meta.requestId,
+    };
     const updated =
       body.decision === 'APPROVE'
-        ? await this.applyEvent(record, 'APPROVE', {
-            set: { availableAt: now, reviewedBy: meta.adminId },
-            remove: ['reviewNote'],
-          })
-        : await this.applyEvent(record, 'REQUEST_CORRECTION', {
-            set: { reviewedBy: meta.adminId, reviewNote: body.note },
-          });
-    await this.deps.audit.append({
-      eventType: body.decision === 'APPROVE' ? 'RESULT_APPROVED' : 'RESULT_CORRECTION_REQUESTED',
-      outcome: 'SUCCESS',
-      actorType: 'ADMIN',
-      actorId: meta.adminId,
-      patientId: record.patientId,
-      resultId,
-      requestId: meta.requestId,
-    });
+        ? await this.applyEvent(
+            record,
+            'APPROVE',
+            { ...auditInput, eventType: 'RESULT_APPROVED' },
+            {
+              set: { availableAt: now, reviewedBy: meta.adminId },
+              remove: ['reviewNote'],
+            },
+          )
+        : await this.applyEvent(
+            record,
+            'REQUEST_CORRECTION',
+            { ...auditInput, eventType: 'RESULT_CORRECTION_REQUESTED' },
+            { set: { reviewedBy: meta.adminId, reviewNote: body.note } },
+          );
     return toAdminResultView(updated);
   }
 }

@@ -7,6 +7,7 @@ import type { Db } from './db.ts';
 export const AUDIT_EVENT_TYPES = [
   'PIN_REQUESTED',
   'PIN_RESENT',
+  'PIN_RATE_LIMITED',
   'PIN_VERIFY_FAIL',
   'SESSION_CREATED',
   'SESSION_REVOKED',
@@ -121,8 +122,9 @@ export class AuditRepository {
         KeyConditionExpression: `${byPatient ? 'pk' : 'eventType'} = :key AND sk BETWEEN :from AND :to`,
         ExpressionAttributeValues: {
           ':key': byPatient ? `PATIENT#${params.patientId}` : params.eventType,
-          ':from': params.from,
-          ':to': `${params.to}#\uffff`,
+          // Mismo formato que occurredAt (con milisegundos) para comparar como cadena.
+          ':from': new Date(params.from).toISOString(),
+          ':to': `${new Date(params.to).toISOString()}#\uffff`,
         },
         ScanIndexForward: false,
         Limit: params.limit ?? 100,

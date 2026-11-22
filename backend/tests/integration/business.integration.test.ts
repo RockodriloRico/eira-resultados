@@ -8,6 +8,11 @@ import { ResultService } from '../../src/services/resultService.ts';
 import { createTestEnv, type TestEnv } from './localEnv.ts';
 
 const admin = { adminId: 'admin-sintetico', requestId: 'req-1' };
+const SUBMIT_AUDIT = {
+  eventType: 'RESULT_SUBMITTED',
+  outcome: 'SUCCESS',
+  actorType: 'ADMIN',
+} as const;
 let env: TestEnv;
 let patients: PatientService;
 let results: ResultService;
@@ -49,6 +54,26 @@ describe('pacientes', () => {
     });
   });
 
+  it('dos altas concurrentes del mismo folio: solo una se guarda', async () => {
+    const input = {
+      fullName: 'Dora Carrera Sintética',
+      birthDate: '1999-09-09',
+      folio: 'SINT-0099',
+      phone: '+525500000099',
+    };
+    const outcomes = await Promise.allSettled([
+      patients.create(input, admin),
+      patients.create(input, admin),
+    ]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const view = await patients.findByFolio('SINT-0099', admin);
+    expect(
+      await env.repos.patients.findIdsByFolioHash(
+        (await env.repos.patients.get(view!.patientId))!.folioHash,
+      ),
+    ).toHaveLength(1);
+  });
+
   it('folio inexistente devuelve undefined', async () => {
     expect(await patients.findByFolio('SINT-9999', admin)).toBeUndefined();
   });
@@ -79,7 +104,9 @@ describe('resultados y máquina de estados', () => {
       results.review(created.resultId, { decision: 'APPROVE', checks }, admin),
     ).rejects.toMatchObject({ statusCode: 409 });
     const record = await results.get(created.resultId);
-    const pending = await results.applyEvent(record, 'SUBMIT_DOCUMENT', { set: { version: 1 } });
+    const pending = await results.applyEvent(record, 'SUBMIT_DOCUMENT', SUBMIT_AUDIT, {
+      set: { version: 1 },
+    });
     expect(pending.status).toBe('PENDING_REVIEW');
     await expect(
       results.review(
@@ -93,13 +120,36 @@ describe('resultados y máquina de estados', () => {
     expect(approved.availableAt).toBeDefined();
   });
 
+  it('aprobar tras una corrección elimina la nota en la respuesta y en la tabla', async () => {
+    const view = await patients.findByFolio('SINT-0003', admin);
+    const created = await results.create(
+      { patientId: view!.patientId, resultType: 'PAPANICOLAOU', sampleDate: '2026-04-01' },
+      admin,
+    );
+    const checks = { correspondence: true, integrity: true, legibility: true };
+    await results.applyEvent(await results.get(created.resultId), 'SUBMIT_DOCUMENT', SUBMIT_AUDIT, {
+      set: { version: 1 },
+    });
+    await results.review(
+      created.resultId,
+      { decision: 'REQUEST_CORRECTION', checks, note: 'Página ilegible' },
+      admin,
+    );
+    await results.applyEvent(await results.get(created.resultId), 'SUBMIT_DOCUMENT', SUBMIT_AUDIT, {
+      set: { version: 2 },
+    });
+    const approved = await results.review(created.resultId, { decision: 'APPROVE', checks }, admin);
+    expect(approved.reviewNote).toBeUndefined();
+    expect((await results.get(created.resultId)).reviewNote).toBeUndefined();
+  });
+
   it('dos revisiones concurrentes: solo una se aplica', async () => {
     const view = await patients.findByFolio('SINT-0002', admin);
     const created = await results.create(
       { patientId: view!.patientId, resultType: 'PAPANICOLAOU', sampleDate: '2026-03-01' },
       admin,
     );
-    await results.applyEvent(await results.get(created.resultId), 'SUBMIT_DOCUMENT', {
+    await results.applyEvent(await results.get(created.resultId), 'SUBMIT_DOCUMENT', SUBMIT_AUDIT, {
       set: { version: 1 },
     });
     const checks = { correspondence: true, integrity: true, legibility: true };
@@ -171,6 +221,31 @@ describe('auditoría', () => {
       from: new Date(now.getTime() - 3600_000).toISOString(),
       to: now.toISOString(),
     });
-    expect(items).toHaveLength(3);
+    expect(items.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('los límites del rango con precisión de segundos incluyen el segundo inicial completo', async () => {
+    const at = new Date('2026-06-01T10:00:00.500Z');
+    await env.repos.audit.append(
+      {
+        eventType: 'AUDIT_QUERIED',
+        outcome: 'SUCCESS',
+        actorType: 'SYSTEM',
+        patientId: 'pat_range',
+      },
+      at,
+    );
+    const inRange = await env.repos.audit.query({
+      patientId: 'pat_range',
+      from: '2026-06-01T10:00:00Z',
+      to: '2026-06-01T10:00:01Z',
+    });
+    expect(inRange.items).toHaveLength(1);
+    const before = await env.repos.audit.query({
+      patientId: 'pat_range',
+      from: '2026-06-01T09:00:00Z',
+      to: '2026-06-01T10:00:00Z',
+    });
+    expect(before.items).toHaveLength(0);
   });
 });

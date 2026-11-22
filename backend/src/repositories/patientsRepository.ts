@@ -1,4 +1,4 @@
-import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import type { Db } from './db.ts';
 
 export type PatientStatus = 'ACTIVE' | 'DISABLED';
@@ -65,12 +65,20 @@ export class PatientsRepository {
     return out.Item as Pick<PatientRecord, K> | undefined;
   }
 
-  async create(record: PatientRecord): Promise<void> {
+  /** Alta junto con su evento de auditoría: ambos se escriben o ninguno. */
+  async create(record: PatientRecord, auditItem: Record<string, unknown>): Promise<void> {
     await this.db.send(
-      new PutCommand({
-        TableName: this.table,
-        Item: record,
-        ConditionExpression: 'attribute_not_exists(patientId)',
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.table,
+              Item: record,
+              ConditionExpression: 'attribute_not_exists(patientId)',
+            },
+          },
+          auditItem,
+        ] as never,
       }),
     );
   }

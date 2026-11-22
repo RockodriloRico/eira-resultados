@@ -16,3 +16,10 @@ export const isConditionFailure = (error: unknown): boolean =>
       error.message.includes('ConditionalCheckFailed')));
 
 export const epochSeconds = (date: Date): number => Math.floor(date.getTime() / 1000);
+
+/** Códigos por elemento de una TransactWriteItems cancelada ('None', 'ConditionalCheckFailed', 'TransactionConflict'…). */
+export function cancellationCodes(error: unknown): string[] | undefined {
+  if (!(error instanceof Error) || error.name !== 'TransactionCanceledException') return undefined;
+  const reasons = (error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons;
+  return (reasons ?? []).map((r) => r.Code ?? 'None');
+}

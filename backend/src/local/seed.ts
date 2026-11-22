@@ -14,8 +14,7 @@ export async function seedSynthetic(services: {
 }) {
   const patientIds = new Map<string, string>();
   for (const p of SYNTHETIC_PATIENTS) {
-    const patientId = syntheticId('pat', p.folio);
-    await services.patients.create(p, SEED_ADMIN, { patientId });
+    const { patientId } = await services.patients.create(p, SEED_ADMIN);
     patientIds.set(p.folio, patientId);
   }
   const resultIds: string[] = [];

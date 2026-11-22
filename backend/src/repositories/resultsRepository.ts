@@ -1,4 +1,4 @@
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import type { ResultStatus } from '@eira/shared';
 import type { Db } from './db.ts';
 
@@ -36,12 +36,20 @@ export class ResultsRepository {
     this.table = table;
   }
 
-  async create(record: ResultRecord): Promise<void> {
+  /** Alta junto con su evento de auditoría: ambos se escriben o ninguno. */
+  async create(record: ResultRecord, auditItem: Record<string, unknown>): Promise<void> {
     await this.db.send(
-      new PutCommand({
-        TableName: this.table,
-        Item: record,
-        ConditionExpression: 'attribute_not_exists(resultId)',
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.table,
+              Item: record,
+              ConditionExpression: 'attribute_not_exists(resultId)',
+            },
+          },
+          auditItem,
+        ] as never,
       }),
     );
   }
@@ -82,6 +90,8 @@ export class ResultsRepository {
     set?: Record<string, unknown>;
     remove?: string[];
     now: Date;
+    /** Evento de auditoría escrito en la misma transacción que el cambio de estado. */
+    auditItem: Record<string, unknown>;
   }): Promise<void> {
     const names: Record<string, string> = { '#status': 'status', '#updatedAt': 'updatedAt' };
     const values: Record<string, unknown> = {
@@ -106,13 +116,20 @@ export class ResultsRepository {
       condition += ' AND #version = :version';
     }
     await this.db.send(
-      new UpdateCommand({
-        TableName: this.table,
-        Key: { resultId: params.resultId },
-        UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.join(', ')}` : ''}`,
-        ConditionExpression: condition,
-        ExpressionAttributeNames: names,
-        ExpressionAttributeValues: values,
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: this.table,
+              Key: { resultId: params.resultId },
+              UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.join(', ')}` : ''}`,
+              ConditionExpression: condition,
+              ExpressionAttributeNames: names,
+              ExpressionAttributeValues: values,
+            },
+          },
+          params.auditItem,
+        ] as never,
       }),
     );
   }

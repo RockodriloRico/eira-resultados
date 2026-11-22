@@ -20,6 +20,11 @@ export class AwsSecretsProvider implements SecretsProvider {
   get(): Promise<Secrets> {
     this.cached ??= Promise.all([this.read(this.identityArn), this.read(this.pinArn)]).then(
       ([identity, pin]) => ({ identity, pin }),
+      (error: unknown) => {
+        // Un fallo transitorio no debe quedar en caché: el siguiente intento vuelve a leer.
+        this.cached = undefined;
+        throw error;
+      },
     );
     return this.cached;
   }

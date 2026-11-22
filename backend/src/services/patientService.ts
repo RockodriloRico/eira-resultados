@@ -2,7 +2,8 @@ import type { AdminPatientView } from '@eira/shared';
 import type { AppConfig } from '../config.ts';
 import { identityHashes, maskPhone, normalizeFolio } from '../domain/identity.ts';
 import { HttpError } from '../http/responses.ts';
-import { randomId } from '../security/crypto.ts';
+import { hmac } from '../security/crypto.ts';
+import { isConditionFailure } from '../repositories/db.ts';
 import type { SecretsProvider } from '../security/secrets.ts';
 import type { AuditRepository } from '../repositories/auditRepository.ts';
 import type { PatientRecord, PatientsRepository } from '../repositories/patientsRepository.ts';
@@ -33,7 +34,6 @@ export class PatientService {
   async create(
     input: { fullName: string; birthDate: string; folio: string; phone: string },
     meta: ActorMeta,
-    options: { patientId?: string } = {},
   ): Promise<AdminPatientView> {
     const { patients, audit, secrets, clock, config } = this.deps;
     const { identity } = await secrets.get();
@@ -43,7 +43,8 @@ export class PatientService {
     }
     const now = clock();
     const record: PatientRecord = {
-      patientId: options.patientId ?? `pat_${randomId()}`,
+      // Derivado del folio: dos altas concurrentes del mismo folio chocan en attribute_not_exists.
+      patientId: `pat_${hmac(identity, `patientId:${hashes.folioHash}`).slice(0, 22)}`,
       ...hashes,
       phoneE164: input.phone,
       status: 'ACTIVE',
@@ -52,8 +53,7 @@ export class PatientService {
       createdAt: now.toISOString(),
       createdBy: meta.adminId,
     };
-    await patients.create(record);
-    await audit.append(
+    const auditItem = audit.transactPut(
       {
         eventType: 'PATIENT_CREATED',
         outcome: 'SUCCESS',
@@ -64,6 +64,13 @@ export class PatientService {
       },
       now,
     );
+    try {
+      await patients.create(record, auditItem);
+    } catch (error) {
+      if (isConditionFailure(error))
+        throw new HttpError(409, 'Ya existe un expediente con ese folio');
+      throw error;
+    }
     return toAdminPatientView(record);
   }
 
