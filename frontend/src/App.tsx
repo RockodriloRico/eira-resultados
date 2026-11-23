@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react';
-import { AdminPortal } from './admin/AdminPortal.tsx';
+import { AdminAccess, AdminCallback } from './admin/AdminAccess.tsx';
+import { isAdminCallback } from './admin/auth.ts';
 import { PatientPortal } from './patient/PatientPortal.tsx';
 import styles from './App.module.css';
 
-const current = () => (window.location.hash === '#/admin' ? 'admin' : 'patient');
+// `/admin` es el retorno del cierre de sesión de Cognito; `#/admin` la navegación interna.
+const current = () => {
+  const { hash, pathname } = window.location;
+  return hash === '#/admin' || (!hash && pathname === '/admin') ? 'admin' : 'patient';
+};
 
 export function App() {
   const [view, setView] = useState(current);
@@ -12,6 +17,7 @@ export function App() {
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
+  if (isAdminCallback()) return <AdminCallback />;
   return (
     <main className={styles.container}>
       <h1 className={styles.title}>EIRA Resultados</h1>
@@ -26,7 +32,7 @@ export function App() {
           Administración
         </a>
       </nav>
-      {view === 'admin' ? <AdminPortal /> : <PatientPortal />}
+      {view === 'admin' ? <AdminAccess /> : <PatientPortal />}
     </main>
   );
 }

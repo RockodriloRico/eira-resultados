@@ -279,7 +279,7 @@ export async function startDevServer(options: {
         });
       authorizer = { patientId: principal.patientId, tokenHash: principal.tokenHash };
     } else if (found.entry.auth === 'admin') {
-      authorizer = { claims: { sub: SYNTHETIC_ADMIN_SUB } };
+      authorizer = { claims: { sub: SYNTHETIC_ADMIN_SUB, 'cognito:groups': 'admins' } };
     }
     const query = Object.fromEntries(url.searchParams);
     const event = {

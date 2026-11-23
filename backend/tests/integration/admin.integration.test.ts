@@ -34,6 +34,7 @@ const call = (
     path?: Record<string, string>;
     query?: Record<string, string>;
     sub?: string | null;
+    groups?: string;
   } = {},
 ) =>
   httpHandler(
@@ -48,7 +49,12 @@ const call = (
     headers: {},
     requestContext: {
       requestId: 'req',
-      authorizer: opts.sub === null ? null : { claims: { sub: opts.sub ?? admin.adminId } },
+      authorizer:
+        opts.sub === null
+          ? null
+          : {
+              claims: { sub: opts.sub ?? admin.adminId, 'cognito:groups': opts.groups ?? 'admins' },
+            },
     },
   } as unknown as APIGatewayProxyEvent).then((r) => ({
     status: r.statusCode,
@@ -148,6 +154,18 @@ describe('administración de expedientes', () => {
       (await call(route(), 'GET', '/v1/admin/patients', { query: { folio: 'NOPE-9999' } })).status,
     ).toBe(404);
     expect((await call(route(), 'DELETE', '/v1/admin/patients')).status).toBe(404);
+  });
+
+  it('con identidad de Cognito pero sin el grupo admins responde 403 y no expone datos', async () => {
+    for (const groups of ['', 'operadores', 'adminsx'])
+      expect(
+        (
+          await call(route(), 'GET', '/v1/admin/patients', {
+            query: { folio: 'ADM-0001' },
+            groups,
+          })
+        ).status,
+      ).toBe(403);
   });
 });
 

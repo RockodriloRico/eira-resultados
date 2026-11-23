@@ -66,11 +66,28 @@ export function sessionContext(event: APIGatewayProxyEvent): {
   return { patientId, tokenHash };
 }
 
-/** Identidad del administrador (claims de Cognito). */
+export const ADMIN_GROUP = 'admins';
+
+/**
+ * Grupos de Cognito del claim `cognito:groups`. El authorizer de API Gateway REST entrega los
+ * claims como texto; se aceptan arreglo, texto separado por comas o espacios, y `[a b]`.
+ */
+export function cognitoGroups(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((g): g is string => typeof g === 'string');
+  if (typeof value !== 'string') return [];
+  return value
+    .replace(/^\[|\]$/g, '')
+    .split(/[\s,]+/)
+    .filter(Boolean);
+}
+
+/** Identidad del administrador (claims de Cognito). Exige pertenecer al grupo `admins` (ADR-0006). */
 export function adminContext(event: APIGatewayProxyEvent): { adminId: string } {
   const claims = (event.requestContext?.authorizer as Record<string, unknown> | null | undefined)
     ?.claims as Record<string, unknown> | undefined;
   const sub = claims?.sub;
   if (typeof sub !== 'string' || !sub) throw new HttpError(401, 'No autorizado');
+  if (!cognitoGroups(claims?.['cognito:groups']).includes(ADMIN_GROUP))
+    throw new HttpError(403, 'Acceso restringido al personal autorizado');
   return { adminId: sub };
 }
