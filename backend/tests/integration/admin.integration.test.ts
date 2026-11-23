@@ -12,6 +12,7 @@ import {
   adminReviewUrlRoute,
 } from '../../src/http/adminRoutes.ts';
 import { httpHandler } from '../../src/http/handler.ts';
+import { LOCAL_ADMIN_TOKEN } from '../../src/http/responses.ts';
 import { syntheticPdf } from '../../src/local/syntheticPdf.ts';
 import { MockSmsProvider } from '../../src/sms/SmsProvider.ts';
 import { LocalDocumentStorage, sha256Base64 } from '../../src/storage/DocumentStorage.ts';
@@ -53,7 +54,13 @@ const call = (
         opts.sub === null
           ? null
           : {
-              claims: { sub: opts.sub ?? admin.adminId, 'cognito:groups': opts.groups ?? 'admins' },
+              claims: {
+                sub: opts.sub ?? admin.adminId,
+                'cognito:groups': opts.groups ?? 'admins',
+                token_use: 'access',
+                client_id: LOCAL_ADMIN_TOKEN.clientId,
+                iss: LOCAL_ADMIN_TOKEN.issuer,
+              },
             },
     },
   } as unknown as APIGatewayProxyEvent).then((r) => ({

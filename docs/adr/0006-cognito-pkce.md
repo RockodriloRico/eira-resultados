@@ -25,4 +25,7 @@
 - Recargar la página o cerrar la pestaña termina la sesión del portal: es el costo de no persistir tokens.
 - La identidad sintética solo existe con `config.json` en modo `local` y el servidor de `127.0.0.1`.
 - El backend responde `401` sin `sub` y `403` si `cognito:groups` no es exactamente `admins` (o `[admins]`). No se separa por comas ni espacios, porque un nombre de grupo de Cognito puede contenerlos; pertenecer a otro grupo además de `admins` también da `403`.
+- Validación del access token, en dos capas:
+  - **API Gateway (`CognitoAuthorizer`):** verifica la firma con las llaves del User Pool, que el emisor sea ese pool y que no haya vencido. Con `AuthorizationScopes: [openid]` solo acepta access tokens. No comprueba el cliente.
+  - **Backend (`adminContext`):** exige `token_use=access`, `client_id` igual a `ADMIN_CLIENT_ID` (el cliente administrativo) e `iss` igual a `ADMIN_TOKEN_ISSUER`; si no, `401`. En Lambda, sin esas variables toda petición recibe `401`. La identidad sintética local usa un cliente y un emisor propios que no existen en AWS.
 - La sesión vive en un `UserManager` único por página: cambiar de sección no la pierde.

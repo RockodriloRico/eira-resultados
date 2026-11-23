@@ -1840,6 +1840,8 @@ Resources:
         LogGroup: !Ref AdminPatientsLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           PATIENTS_TABLE: !Ref PatientsTable
           AUDIT_LOG_TABLE: !Ref AuditLogTable
           IDENTITY_HMAC_SECRET_ARN: !Ref IdentityHmacSecret
@@ -1895,6 +1897,8 @@ Resources:
         LogGroup: !Ref AdminResultsLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           PATIENTS_TABLE: !Ref PatientsTable
           RESULTS_TABLE: !Ref ResultsTable
           AUDIT_LOG_TABLE: !Ref AuditLogTable
@@ -1970,6 +1974,8 @@ Resources:
         LogGroup: !Ref AdminReviewUrlLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           RESULTS_TABLE: !Ref ResultsTable
           AUDIT_LOG_TABLE: !Ref AuditLogTable
           DOCUMENTS_BUCKET: !Ref DocumentsBucket
@@ -2007,6 +2013,8 @@ Resources:
         LogGroup: !Ref AdminAuditLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           AUDIT_LOG_TABLE: !Ref AuditLogTable
       Events:
         Api:

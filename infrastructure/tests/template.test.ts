@@ -302,6 +302,34 @@ describe('S3 y CloudFront', () => {
 describe('API Gateway REST', () => {
   const api = R.EiraApi!.Properties!;
 
+  it('rutas administrativas: Cognito authorizer con scopes y cliente y emisor esperados en Lambda', () => {
+    const fns = [
+      'AdminPatientsFunction',
+      'AdminResultsFunction',
+      'AdminReviewUrlFunction',
+      'AdminAuditFunction',
+    ];
+    for (const id of fns) {
+      const props = R[id]!.Properties!;
+      // Con AuthorizationScopes, el authorizer solo acepta access tokens (firma, emisor y exp).
+      for (const ev of Object.values(props.Events as Record<string, any>)) {
+        expect(ev.Properties.Auth, id).toEqual({
+          Authorizer: 'CognitoAuthorizer',
+          AuthorizationScopes: ['openid'],
+        });
+      }
+      expect(props.Environment.Variables.ADMIN_CLIENT_ID, id).toEqual({
+        Ref: 'AdminUserPoolClient',
+      });
+      expect(props.Environment.Variables.ADMIN_TOKEN_ISSUER, id).toEqual({
+        'Fn::Sub': 'https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}',
+      });
+    }
+    expect(api.Auth.Authorizers.CognitoAuthorizer.UserPoolArn).toEqual({
+      'Fn::GetAtt': ['AdminUserPool', 'Arn'],
+    });
+  });
+
   it('crea la API (y con ella el stage) después de AWS::ApiGateway::Account cuando se gestiona', () => {
     expect(R.EiraApi!.DependsOn).toBe('ApiGatewayAccountReady');
     expect(R.ApiGatewayAccountReady!.Condition).toBeUndefined();

@@ -19,7 +19,7 @@ import {
 } from '../http/adminRoutes.ts';
 import { httpHandler, type Route } from '../http/handler.ts';
 import { downloadUrlRoute, listResultsRoute, logoutRoute } from '../http/patientRoutes.ts';
-import { HttpError } from '../http/responses.ts';
+import { HttpError, LOCAL_ADMIN_TOKEN } from '../http/responses.ts';
 import { createDb } from '../repositories/db.ts';
 import { StaticSecretsProvider } from '../security/secrets.ts';
 import { MockSmsProvider } from '../sms/SmsProvider.ts';
@@ -279,7 +279,15 @@ export async function startDevServer(options: {
         });
       authorizer = { patientId: principal.patientId, tokenHash: principal.tokenHash };
     } else if (found.entry.auth === 'admin') {
-      authorizer = { claims: { sub: SYNTHETIC_ADMIN_SUB, 'cognito:groups': 'admins' } };
+      authorizer = {
+        claims: {
+          sub: SYNTHETIC_ADMIN_SUB,
+          'cognito:groups': 'admins',
+          token_use: 'access',
+          client_id: LOCAL_ADMIN_TOKEN.clientId,
+          iss: LOCAL_ADMIN_TOKEN.issuer,
+        },
+      };
     }
     const query = Object.fromEntries(url.searchParams);
     const event = {
