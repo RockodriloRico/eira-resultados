@@ -39,6 +39,12 @@ export async function runSmoke(options: SmokeOptions): Promise<SmokeCheck[]> {
     if (!cond) throw new Error(message);
   };
 
+  if (!options.frontendUrl && options.stage !== 'local')
+    checks.push({
+      name: 'frontend: URL requerida',
+      ok: false,
+      detail: 'un entorno desplegado exige --frontend',
+    });
   if (options.frontendUrl) {
     const base = options.frontendUrl.replace(/\/$/, '');
     await check('frontend: HTTPS y encabezados de seguridad', async () => {

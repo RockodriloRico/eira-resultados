@@ -71,4 +71,9 @@ describe('smoke tests posteriores al despliegue', () => {
     });
     expect(checks.find((c) => c.name.startsWith('access/request'))!.ok).toBe(false);
   });
+
+  it('en un entorno desplegado falla si no se indica el frontend', async () => {
+    const checks = await runSmoke({ apiUrl: API, stage: 'demo', fetchFn: fakeFetch() });
+    expect(checks.find((c) => c.name === 'frontend: URL requerida')?.ok).toBe(false);
+  });
 });
