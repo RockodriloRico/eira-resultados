@@ -123,7 +123,9 @@ jobs:
           STAGE: ${{ inputs.stage }}
           BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
         run: |
-          sam deploy --config-env "$STAGE" --template-file ../.aws-sam/build/template.yaml \
+          # SAM busca samconfig.toml junto a la plantilla construida; se indica explícitamente.
+          sam deploy --config-file "$GITHUB_WORKSPACE/infrastructure/samconfig.toml" --config-env "$STAGE" \
+            --template-file ../.aws-sam/build/template.yaml \
             --s3-bucket "$BUCKET" --s3-prefix "eira-$STAGE" \
             --no-execute-changeset --no-confirm-changeset --no-fail-on-empty-changeset
 
