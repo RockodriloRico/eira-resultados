@@ -38,6 +38,8 @@ export async function runTimingStudy(options: {
   classes: readonly TimingClass[];
   seed: number;
   concurrency: number;
+  /** Separación mínima entre inicios de solicitudes, para no superar el límite por IP del WAF. */
+  intervalMs?: number;
   criteria?: TimingCriteria;
   fetchFn?: typeof fetch;
 }): Promise<TimingReport> {
@@ -51,9 +53,15 @@ export async function runTimingStudy(options: {
     options.classes.map((c) => [c.name, []]),
   );
   let next = 0;
+  let nextStart = performance.now();
   const worker = async () => {
     while (next < jobs.length) {
       const job = jobs.at(next++)!;
+      if (options.intervalMs) {
+        const wait = nextStart - performance.now();
+        nextStart = Math.max(nextStart, performance.now()) + options.intervalMs;
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      }
       const started = performance.now();
       const res = await doFetch(`${options.apiUrl}/v1/access/request`, {
         method: 'POST',

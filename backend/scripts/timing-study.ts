@@ -10,6 +10,8 @@ const { values } = parseArgs({
     n: { type: 'string', default: '30' },
     seed: { type: 'string', default: '20261122' },
     out: { type: 'string', default: 'timing-report.json' },
+    // El WAF bloquea más de 20 solicitudes de acceso por IP en 300 s: 16 s entre solicitudes.
+    'interval-ms': { type: 'string', default: '16000' },
   },
 });
 if (!values.api) {
@@ -39,7 +41,8 @@ const report = await runTimingStudy({
   apiUrl: values.api,
   classes,
   seed: Number(values.seed),
-  concurrency: 5,
+  concurrency: 1,
+  intervalMs: Number(values['interval-ms']),
 });
 // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta indicada por el operador
 writeFileSync(values.out, `${JSON.stringify(report, null, 2)}\n`);

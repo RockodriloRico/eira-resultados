@@ -37,3 +37,5 @@ npm run timing:study -- --api <ApiUrl> --n 30 --seed 20261122 --out timing-demo.
 ```
 
 Solo usa folios sintéticos con una fecha incorrecta y folios inexistentes, así que no envía SMS.
+
+La regla del WAF `AccessRequestPerIp` bloquea con `429` más de 20 solicitudes de acceso por IP en 300 s. Por eso el script envía una solicitud cada 16 s (`--interval-ms 16000`) y las 60 solicitudes tardan unos 16 minutos. No hay que lanzarlo justo después de los smoke tests, ni desde varias terminales a la vez.
