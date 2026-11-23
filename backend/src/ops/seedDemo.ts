@@ -20,7 +20,7 @@ type ApiBody = {
   resultId?: string;
   url?: string;
   headers?: Record<string, string>;
-  results?: { sampleDate: string }[];
+  results?: { sampleDate: string; status: string }[];
 };
 
 export async function seedSyntheticViaApi(options: SeedOptions): Promise<{ created: number }> {
@@ -56,7 +56,14 @@ export async function seedSyntheticViaApi(options: SeedOptions): Promise<{ creat
   for (const result of SYNTHETIC_RESULTS) {
     const patient = await call('GET', `/v1/admin/patients?folio=${result.folio}`);
     const existing = await call('GET', `/v1/admin/patients/${patient.body.patientId!}/results`);
-    if (existing.body.results?.some((r) => r.sampleDate === result.sampleDate)) {
+    const expected = result.approved ? 'APPROVED' : 'PENDING_REVIEW';
+    const previous = existing.body.results?.find((r) => r.sampleDate === result.sampleDate);
+    if (previous) {
+      // Un resultado a medias de una ejecución anterior no se reporta como sembrado.
+      if (previous.status !== expected)
+        throw new Error(
+          `${result.folio} ${result.sampleDate}: quedó en ${previous.status}; complétalo en el portal`,
+        );
       log(`${result.folio} ${result.sampleDate}: ya existía`);
       continue;
     }
@@ -82,12 +89,16 @@ export async function seedSyntheticViaApi(options: SeedOptions): Promise<{ creat
       body: pdf,
     });
     if (put.status !== 200) throw new Error(`Carga ${result.folio}: ${put.status}`);
-    await call('POST', `/v1/admin/results/${id}/submit`, spec);
-    if (result.approved)
-      await call('POST', `/v1/admin/results/${id}/review`, {
+    const submit = await call('POST', `/v1/admin/results/${id}/submit`, spec);
+    if (submit.status !== 200)
+      throw new Error(`Envío a revisión ${result.folio}: ${submit.status}`);
+    if (result.approved) {
+      const review = await call('POST', `/v1/admin/results/${id}/review`, {
         decision: 'APPROVE',
         checks: { correspondence: true, integrity: true, legibility: true },
       });
+      if (review.status !== 200) throw new Error(`Aprobación ${result.folio}: ${review.status}`);
+    }
     created++;
     log(`${result.folio} ${result.sampleDate}: ${result.approved ? 'aprobado' : 'en revisión'}`);
   }
