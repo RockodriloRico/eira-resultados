@@ -69,16 +69,14 @@ export function sessionContext(event: APIGatewayProxyEvent): {
 export const ADMIN_GROUP = 'admins';
 
 /**
- * Grupos de Cognito del claim `cognito:groups`. El authorizer de API Gateway REST entrega los
- * claims como texto; se aceptan arreglo, texto separado por comas o espacios, y `[a b]`.
+ * El claim `cognito:groups` debe contener exactamente el grupo `admins`. API Gateway REST lo entrega
+ * como texto (`admins` o `[admins]`); no se separa por comas ni espacios porque un nombre de grupo
+ * de Cognito puede contenerlos (`otros,admins` no es `admins`). Pertenecer a otros grupos además de
+ * `admins` se rechaza (falla cerrada): la plantilla solo define `admins`.
  */
-export function cognitoGroups(value: unknown): string[] {
-  if (Array.isArray(value)) return value.filter((g): g is string => typeof g === 'string');
-  if (typeof value !== 'string') return [];
-  return value
-    .replace(/^\[|\]$/g, '')
-    .split(/[\s,]+/)
-    .filter(Boolean);
+export function isAdminGroupClaim(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length === 1 && value[0] === ADMIN_GROUP;
+  return value === ADMIN_GROUP || value === `[${ADMIN_GROUP}]`;
 }
 
 /** Identidad del administrador (claims de Cognito). Exige pertenecer al grupo `admins` (ADR-0006). */
@@ -87,7 +85,7 @@ export function adminContext(event: APIGatewayProxyEvent): { adminId: string } {
     ?.claims as Record<string, unknown> | undefined;
   const sub = claims?.sub;
   if (typeof sub !== 'string' || !sub) throw new HttpError(401, 'No autorizado');
-  if (!cognitoGroups(claims?.['cognito:groups']).includes(ADMIN_GROUP))
+  if (!isAdminGroupClaim(claims?.['cognito:groups']))
     throw new HttpError(403, 'Acceso restringido al personal autorizado');
   return { adminId: sub };
 }

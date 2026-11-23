@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { describe, expect, it } from 'vitest';
-import { adminContext, cognitoGroups } from '../../src/http/responses.ts';
+import { adminContext, isAdminGroupClaim } from '../../src/http/responses.ts';
 
 const event = (claims: Record<string, unknown> | undefined) =>
   ({
@@ -8,12 +8,23 @@ const event = (claims: Record<string, unknown> | undefined) =>
   }) as unknown as APIGatewayProxyEvent;
 
 describe('identidad administrativa (Cognito)', () => {
-  it('lee cognito:groups en los formatos que entrega el authorizer', () => {
-    expect(cognitoGroups('admins')).toEqual(['admins']);
-    expect(cognitoGroups('otros,admins')).toEqual(['otros', 'admins']);
-    expect(cognitoGroups('[otros admins]')).toEqual(['otros', 'admins']);
-    expect(cognitoGroups(['admins', 3])).toEqual(['admins']);
-    expect(cognitoGroups(undefined)).toEqual([]);
+  it('acepta solo el grupo admins exacto, sin separar nombres con comas o espacios', () => {
+    expect(isAdminGroupClaim('admins')).toBe(true);
+    expect(isAdminGroupClaim('[admins]')).toBe(true);
+    expect(isAdminGroupClaim(['admins'])).toBe(true);
+    for (const value of [
+      'operadores,admins',
+      '[operadores admins]',
+      'admins,otros',
+      ' admins',
+      'adminsx',
+      ['admins', 'otros'],
+      ['operadores,admins'],
+      '',
+      undefined,
+      null,
+    ])
+      expect(isAdminGroupClaim(value)).toBe(false);
   });
 
   it('exige sub (401) y el grupo admins (403)', () => {

@@ -22,8 +22,8 @@
 
 ## Operaciones administrativas (entrega 4)
 
-- Identidad: `sub` de Cognito (`requestContext.authorizer.claims`); sin claims, `401`. Sin el grupo
-  `admins` en `cognito:groups`, `403`.
+- Identidad: `sub` de Cognito (`requestContext.authorizer.claims`); sin claims, `401`. Si `cognito:groups` no es
+  exactamente `admins`, `403`.
 - `adminPatients`: alta, búsqueda exacta por folio y consulta. La lectura se limita a `patientId, status, dataClassification, phoneE164, createdAt`; el teléfono se devuelve enmascarado.
 - `adminResults`: alta de resultado, listado por expediente, URL de carga, confirmación (`submit`) y revisión. La URL de carga firma tamaño, `x-amz-checksum-sha256` y SSE-KMS: S3 rechaza otro archivo. `submit` compara con `HeadObject` antes de pasar a `PENDING_REVIEW`. Cada corrección crea una versión nueva (`vN.pdf`).
 - `adminReviewUrl`: función y rol propios; URL de 60 s solo en `PENDING_REVIEW` (ADR-0009, enmienda).

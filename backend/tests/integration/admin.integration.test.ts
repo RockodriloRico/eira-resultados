@@ -157,7 +157,7 @@ describe('administración de expedientes', () => {
   });
 
   it('con identidad de Cognito pero sin el grupo admins responde 403 y no expone datos', async () => {
-    for (const groups of ['', 'operadores', 'adminsx'])
+    for (const groups of ['', 'operadores', 'adminsx', 'operadores,admins'])
       expect(
         (
           await call(route(), 'GET', '/v1/admin/patients', {

@@ -24,4 +24,5 @@
 - Cierre de sesión: revoca el refresh token (`/oauth2/revoke`), descarta los tokens y navega a `/logout` de Cognito con `client_id` y `logout_uri` (`/admin`).
 - Recargar la página o cerrar la pestaña termina la sesión del portal: es el costo de no persistir tokens.
 - La identidad sintética solo existe con `config.json` en modo `local` y el servidor de `127.0.0.1`.
-- El backend responde `401` sin `sub` y `403` si `cognito:groups` no incluye `admins`.
+- El backend responde `401` sin `sub` y `403` si `cognito:groups` no es exactamente `admins` (o `[admins]`). No se separa por comas ni espacios, porque un nombre de grupo de Cognito puede contenerlos; pertenecer a otro grupo además de `admins` también da `403`.
+- La sesión vive en un `UserManager` único por página: cambiar de sección no la pierde.
