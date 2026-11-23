@@ -6,7 +6,7 @@
 
 - `.github/workflows/deploy.yml` se ejecuta **solo a mano** (`workflow_dispatch`) y desde `main`. Hay que escribir el nombre del entorno para confirmar.
 - Tiene cuatro jobs encadenados:
-  1. **`guard`:** sin permisos de AWS. Falla mientras falte alguna de las variables del repositorio `EIRA_DEPLOY_ENABLED=true`, `AWS_DEPLOY_ROLE_ARN` o `SAM_ARTIFACTS_BUCKET`. En `prod` también exige `EIRA_PROD_SMS_READY=true`, que no existirá hasta que haya un proveedor SMS real.
+  1. **`guard`:** sin permisos de AWS. Falla mientras la variable del repositorio `EIRA_DEPLOY_ENABLED` no sea `true`. `plan` y `apply` fallan antes de pedir credenciales si no ven `AWS_DEPLOY_ROLE_ARN` y `SAM_ARTIFACTS_BUCKET`, que pueden definirse en el repositorio o en cada environment. En `prod` también exige `EIRA_PROD_SMS_READY=true`, que no existirá hasta que haya un proveedor SMS real.
   2. **`build`:** sin credenciales. Ejecuta `npm run check`, `sam validate --lint` y `sam build`.
   3. **`plan`:** environment `<stage>` con aprobación manual. Usa OIDC y `sam deploy --no-execute-changeset`, así que solo crea el _change set_.
   4. **`apply`:** environment `<stage>-apply`, con una segunda aprobación manual. Ejecuta el change set, genera `config.json` desde los outputs y publica el frontend.

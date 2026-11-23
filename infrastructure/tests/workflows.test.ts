@@ -13,12 +13,10 @@ describe('workflow de despliegue sin capacidad efectiva (ADR-0013)', () => {
     expect(deploy.permissions).toEqual({ contents: 'read' });
   });
 
-  it('guard exige autorización, rol, bucket, confirmación, main y SMS real en prod', () => {
+  it('guard exige autorización, confirmación, main y SMS real en prod', () => {
     const script = deploy.jobs.guard.steps[0].run as string;
     for (const text of [
       '"$ENABLED" = "true"',
-      '-n "$ROLE"',
-      '-n "$BUCKET"',
       '"$CONFIRM" = "$STAGE"',
       'refs/heads/main',
       '"$PROD_SMS_READY" = "true"',
@@ -37,6 +35,18 @@ describe('workflow de despliegue sin capacidad efectiva (ADR-0013)', () => {
     expect(deploy.jobs.plan.needs).toBe('build');
     expect(deploy.jobs.apply.needs).toBe('plan');
     expect(deploy.jobs.plan.environment).not.toBe(deploy.jobs.apply.environment);
+  });
+
+  it('plan y apply comprueban rol y bucket en su environment antes de pedir credenciales', () => {
+    for (const id of ['plan', 'apply']) {
+      const steps = deploy.jobs[id].steps as { name?: string; uses?: string; run?: string }[];
+      const check = steps.findIndex(
+        (s) => s.run?.includes('-n "$ROLE"') && s.run.includes('-n "$BUCKET"'),
+      );
+      const creds = steps.findIndex((s) => s.uses?.includes('configure-aws-credentials'));
+      expect(check, id).toBeGreaterThanOrEqual(0);
+      expect(check, id).toBeLessThan(creds);
+    }
   });
 
   it('el plan no ejecuta el change set', () => {
