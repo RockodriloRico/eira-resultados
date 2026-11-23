@@ -53,4 +53,14 @@ describe('estadística de la prueba de tiempos', () => {
     expect(ci.high - ci.low).toBeLessThan(25);
     expect(shiftConfidenceInterval([1, 2, 3], [1, 2, 3]).shift).toBe(0);
   });
+
+  it('sin datos suficientes para la confianza pedida, el intervalo no está acotado', () => {
+    expect(shiftConfidenceInterval([1000, 1001], [1000, 1002])).toMatchObject({
+      low: -Infinity,
+      high: Infinity,
+    });
+    expect(Number.isFinite(shiftConfidenceInterval([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]).low)).toBe(
+      true,
+    );
+  });
 });

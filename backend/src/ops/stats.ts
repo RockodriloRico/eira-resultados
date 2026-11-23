@@ -100,14 +100,14 @@ export function shiftConfidenceInterval(
   const diffs = a.flatMap((x) => b.map((y) => x - y)).sort((x, y) => x - y);
   const m = diffs.length;
   const z = normalQuantile(1 - (1 - level) / 2);
-  const k = Math.max(
-    1,
-    Math.floor(
-      (a.length * b.length) / 2 -
-        z * Math.sqrt((a.length * b.length * (a.length + b.length + 1)) / 12),
-    ),
+  const k = Math.floor(
+    (a.length * b.length) / 2 -
+      z * Math.sqrt((a.length * b.length * (a.length + b.length + 1)) / 12),
   );
   const mid = m % 2 ? diffs.at((m - 1) / 2)! : (diffs.at(m / 2 - 1)! + diffs.at(m / 2)!) / 2;
+  // Con muestras tan pequeñas que ningún par de diferencias alcanza la confianza pedida, el
+  // intervalo no está acotado: nunca se acepta equivalencia por falta de datos.
+  if (k < 1) return { shift: mid, low: -Infinity, high: Infinity };
   return { shift: mid, low: diffs.at(k - 1)!, high: diffs.at(m - k)! };
 }
 
