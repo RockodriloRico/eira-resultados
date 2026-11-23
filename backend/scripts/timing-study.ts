@@ -43,6 +43,12 @@ const report = await runTimingStudy({
   seed: Number(values.seed),
   concurrency: 1,
   intervalMs: Number(values['interval-ms']),
+  // Descarta arranques en frío de Lambda; también respetan el intervalo del WAF.
+  warmup: Array.from({ length: 3 }, (_, i) => ({
+    fullName: 'Persona Inexistente',
+    birthDate: '1980-05-05',
+    folio: `SINT-W${String(i).padStart(4, '0')}`,
+  })),
 });
 // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta indicada por el operador
 writeFileSync(values.out, `${JSON.stringify(report, null, 2)}\n`);

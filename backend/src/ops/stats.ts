@@ -86,3 +86,39 @@ export function mannWhitney(a: readonly number[], b: readonly number[]): { u: nu
   const z = (Math.abs(u1 - (n1 * n2) / 2) - 0.5) / sigma;
   return { u, p: Math.min(1, 2 * (1 - normalCdf(Math.max(0, z)))) };
 }
+
+/**
+ * Estimador de Hodges-Lehmann del desplazamiento a − b y su intervalo de confianza basado en
+ * Mann-Whitney (aproximación normal). Con `level = 0.9`, que el intervalo quede dentro de ±margen
+ * equivale a TOST con α = 0.05 por lado: evidencia de equivalencia, no solo de "sin diferencia".
+ */
+export function shiftConfidenceInterval(
+  a: readonly number[],
+  b: readonly number[],
+  level = 0.9,
+): { shift: number; low: number; high: number } {
+  const diffs = a.flatMap((x) => b.map((y) => x - y)).sort((x, y) => x - y);
+  const m = diffs.length;
+  const z = normalQuantile(1 - (1 - level) / 2);
+  const k = Math.max(
+    1,
+    Math.floor(
+      (a.length * b.length) / 2 -
+        z * Math.sqrt((a.length * b.length * (a.length + b.length + 1)) / 12),
+    ),
+  );
+  const mid = m % 2 ? diffs.at((m - 1) / 2)! : (diffs.at(m / 2 - 1)! + diffs.at(m / 2)!) / 2;
+  return { shift: mid, low: diffs.at(k - 1)!, high: diffs.at(m - k)! };
+}
+
+/** Cuantil de la normal estándar por bisección sobre `normalCdf` (suficiente para α ≥ 1e-6). */
+function normalQuantile(q: number): number {
+  let lo = -10;
+  let hi = 10;
+  for (let i = 0; i < 100; i++) {
+    const mid = (lo + hi) / 2;
+    if (normalCdf(mid) < q) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}

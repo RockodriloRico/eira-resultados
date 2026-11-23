@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { mannWhitney, seededRandom, shuffle, summarize } from '../../src/ops/stats.ts';
+import {
+  mannWhitney,
+  seededRandom,
+  shiftConfidenceInterval,
+  shuffle,
+  summarize,
+} from '../../src/ops/stats.ts';
 
 describe('estadística de la prueba de tiempos', () => {
   it('el PRNG y el barajado son reproducibles con la misma semilla', () => {
@@ -35,5 +41,16 @@ describe('estadística de la prueba de tiempos', () => {
 
   it('resume mínimo, mediana, p95 y máximo', () => {
     expect(summarize([3, 1, 2, 4])).toEqual({ n: 4, min: 1, median: 3, p95: 4, max: 4, mean: 2.5 });
+  });
+
+  it('el intervalo de Hodges-Lehmann contiene el desplazamiento real y se estrecha con la muestra', () => {
+    const r = seededRandom(7);
+    const a = Array.from({ length: 30 }, () => 1000 + r() * 50 + 10);
+    const b = Array.from({ length: 30 }, () => 1000 + r() * 50);
+    const ci = shiftConfidenceInterval(a, b);
+    expect(ci.low).toBeLessThan(10);
+    expect(ci.high).toBeGreaterThan(10);
+    expect(ci.high - ci.low).toBeLessThan(25);
+    expect(shiftConfidenceInterval([1, 2, 3], [1, 2, 3]).shift).toBe(0);
   });
 });

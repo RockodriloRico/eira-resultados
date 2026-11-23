@@ -59,7 +59,14 @@ describe('prueba estadística de tiempos anti-enumeración', () => {
     report = await runTimingStudy({
       apiUrl: url,
       seed: SEED,
-      concurrency: 15,
+      // Concurrencia 5 y calentamiento: con 15 solicitudes simultáneas contra un solo proceso y
+      // DynamoDB Local, el trabajo superaba el piso en 4–8 de 30 solicitudes por clase (docs/timing-study.md).
+      concurrency: 5,
+      warmup: Array.from({ length: 10 }, (_, i) => ({
+        fullName: 'Calentamiento Sintético',
+        birthDate: '1980-01-15',
+        folio: `SINT-W${String(i).padStart(4, '0')}`,
+      })),
       classes: [
         { name: 'existente', bodies: patients.slice(0, N) },
         {
@@ -97,8 +104,12 @@ describe('prueba estadística de tiempos anti-enumeración', () => {
     expect(new Set(Object.values(report.classes).flatMap((c) => c.bodyShapes)).size).toBe(1);
   });
 
-  it('las distribuciones no son distinguibles (Mann-Whitney, α = 0.001)', () => {
+  it('Mann-Whitney no distingue las clases (α = 0.001) y el IC 90 % del desplazamiento queda en ±25 ms', () => {
     expect(report.comparisons).toHaveLength(3);
+    for (const c of report.comparisons) {
+      expect(c.shiftCi90Ms[0], `${c.a}/${c.b}`).toBeGreaterThan(-25);
+      expect(c.shiftCi90Ms[1], `${c.a}/${c.b}`).toBeLessThan(25);
+    }
     expect(report.failures).toEqual([]);
   });
 });

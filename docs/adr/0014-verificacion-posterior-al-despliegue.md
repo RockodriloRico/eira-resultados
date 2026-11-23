@@ -18,10 +18,12 @@
   - Criterios fijos:
     - Mínimo ≥ 1000 ms y p95 ≤ 1300 ms.
     - Solo `202`, con el mismo esquema.
-    - Mann-Whitney bilateral entre cada par de clases con α = 0.001, y diferencia de medianas ≤ 25 ms.
+    - Mann-Whitney bilateral entre cada par de clases con α = 0.001.
+    - Equivalencia: el IC del 90 % del desplazamiento (Hodges-Lehmann, TOST) dentro de ±25 ms.
+  - Calentamiento descartado y 5 solicitudes en paralelo en local; 1 cada 16 s contra `demo`.
   - Detalle y resultados en [timing-study.md](../timing-study.md).
 
 ## Consecuencias
 
 - La prueba local mide la lógica (piso, jitter y trabajo equivalente), no la red de AWS. Contra `demo`, `timing:study` usa solo identidades no coincidentes e inexistentes, para no enviar SMS ni crear retos reales.
-- Mann-Whitney no prueba la ausencia de diferencias. Con n = 30 detecta, con α = 0.001, desplazamientos sistemáticos de unos 20 ms (prueba unitaria). Diferencias menores quedan dentro del jitter de 0–50 ms.
+- Mann-Whitney no prueba la ausencia de diferencias: p ≥ α solo indica que no se detectó una. Con n = 30 detecta un desplazamiento de 20 ms el 90 % de las veces y uno de 10 ms solo el 16 %. La equivalencia se afirma únicamente con el intervalo de confianza y su margen de ±25 ms; desplazamientos menores de unos 10 ms no se pueden descartar con esta muestra ([timing-study.md](../timing-study.md)).
