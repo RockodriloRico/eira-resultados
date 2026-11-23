@@ -23,6 +23,21 @@ export function redact(value: unknown, depth = 0): unknown {
   );
 }
 
+export const METRIC_NAMESPACE = 'EiraResultados';
+
+/** Métricas de aplicación; las alarmas de la plantilla usan estos mismos nombres. */
+export const METRIC_NAMES = [
+  'AuditWriteFailed',
+  'SmsSendFailed',
+  'NonSyntheticRecordInDemo',
+  'ResponseFloorExceeded',
+  'PinVerifyFailed',
+  'PinChallengeLocked',
+  'DownloadDenied',
+  'AdminForbidden',
+] as const;
+export type MetricName = (typeof METRIC_NAMES)[number];
+
 type Level = 'INFO' | 'WARN' | 'ERROR';
 function write(level: Level, message: string, fields: Record<string, unknown> = {}) {
   const line = JSON.stringify({ level, message, ...(redact(fields) as object) });
@@ -33,20 +48,24 @@ export const logger = {
   info: (message: string, fields?: Record<string, unknown>) => write('INFO', message, fields),
   warn: (message: string, fields?: Record<string, unknown>) => write('WARN', message, fields),
   error: (message: string, fields?: Record<string, unknown>) => write('ERROR', message, fields),
-  /** Métrica en formato CloudWatch Embedded Metric Format. */
-  metric: (name: string, value = 1) =>
+  /**
+   * Métrica en CloudWatch Embedded Metric Format (namespace `EiraResultados`, dimensión `Stage`).
+   * Solo nombres de una lista cerrada y conteos: nunca identificadores ni datos personales.
+   */
+  metric: (name: MetricName, value = 1) =>
     process.stdout.write(
       `${JSON.stringify({
         _aws: {
           Timestamp: Date.now(),
           CloudWatchMetrics: [
             {
-              Namespace: 'EiraResultados',
-              Dimensions: [[]],
+              Namespace: METRIC_NAMESPACE,
+              Dimensions: [['Stage']],
               Metrics: [{ Name: name, Unit: 'Count' }],
             },
           ],
         },
+        Stage: process.env.STAGE ?? 'local',
         [name]: value,
       })}\n`,
     ),

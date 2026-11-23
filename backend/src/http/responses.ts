@@ -1,4 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { logger } from '../observability/logger.ts';
 import type { z } from 'zod';
 
 export type HttpResult = APIGatewayProxyResult;
@@ -85,7 +86,9 @@ export function adminContext(event: APIGatewayProxyEvent): { adminId: string } {
     ?.claims as Record<string, unknown> | undefined;
   const sub = claims?.sub;
   if (typeof sub !== 'string' || !sub) throw new HttpError(401, 'No autorizado');
-  if (!isAdminGroupClaim(claims?.['cognito:groups']))
+  if (!isAdminGroupClaim(claims?.['cognito:groups'])) {
+    logger.metric('AdminForbidden');
     throw new HttpError(403, 'Acceso restringido al personal autorizado');
+  }
   return { adminId: sub };
 }

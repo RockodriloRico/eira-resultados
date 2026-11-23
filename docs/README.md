@@ -7,6 +7,7 @@
 | [security-design.md](security-design.md) | Limitación de tasa, anti-enumeración, expiración, `demoPin` y concurrencia |
 | [data-model.md](data-model.md)           | Patrones de acceso y justificación de las tablas DynamoDB                  |
 | [frontend-config.md](frontend-config.md) | `config.json` por entorno: formato, generación y validaciones              |
+| [observability.md](observability.md)     | Alarmas, métricas, dashboard, registro de cumplimiento y costos            |
 | [adr/](adr/)                             | Decisiones de arquitectura (ADR)                                           |
 
 Planeados: `threat-model.md` (STRIDE) y `api.md` (contrato de endpoints).
