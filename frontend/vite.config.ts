@@ -1,8 +1,23 @@
 import react from '@vitejs/plugin-react';
+import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 
+// Solo en `vite dev`: sirve el config.json local (identidad sintética, API por proxy). El build no
+// incluye config.json; en AWS se genera por entorno con `npm run frontend:config`.
+const localRuntimeConfig = (): Plugin => ({
+  name: 'eira-local-runtime-config',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use('/config.json', (_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.setHeader('cache-control', 'no-store');
+      res.end(JSON.stringify({ stage: 'local', apiBaseUrl: '', admin: { mode: 'local' } }));
+    });
+  },
+});
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), localRuntimeConfig()],
   css: {
     modules: { localsConvention: 'camelCaseOnly' },
   },

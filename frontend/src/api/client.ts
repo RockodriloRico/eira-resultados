@@ -1,3 +1,5 @@
+import { runtimeConfig } from '../config/runtime.ts';
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -8,7 +10,10 @@ export class ApiError extends Error {
 
 const FALLBACK = 'No se pudo completar la solicitud. Intenta de nuevo.';
 
-/** Cliente mínimo de la API. El token de sesión vive solo en memoria (nunca en localStorage). */
+/**
+ * Cliente mínimo de la API. `path` es relativo a `apiBaseUrl` de config.json (vacío en local, donde
+ * Vite hace de proxy). El token de sesión vive solo en memoria (nunca en localStorage).
+ */
 export async function api<T>(
   method: 'GET' | 'POST',
   path: string,
@@ -17,7 +22,7 @@ export async function api<T>(
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers['content-type'] = 'application/json';
   if (options.token) headers.authorization = `Bearer ${options.token}`;
-  const res = await fetch(path, {
+  const res = await fetch(`${runtimeConfig().apiBaseUrl}${path}`, {
     method,
     headers,
     body: options.body === undefined ? null : JSON.stringify(options.body),
