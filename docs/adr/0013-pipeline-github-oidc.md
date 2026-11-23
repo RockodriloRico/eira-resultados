@@ -23,4 +23,4 @@
 ## Consecuencias
 
 - Cada despliegue necesita dos aprobaciones humanas: la del change set y la de su ejecución.
-- `apply` ejecuta el último change set `CREATE_COMPLETE` del stack. El runbook pide revisarlo en la consola entre ambas aprobaciones.
+- `plan` elimina los change sets pendientes y pasa a `apply` el identificador del que creó. `apply` ejecuta solo ese y espera la creación o la actualización según su tipo. El runbook pide revisarlo en la consola entre ambas aprobaciones.

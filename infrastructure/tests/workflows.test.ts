@@ -49,6 +49,17 @@ describe('workflow de despliegue sin capacidad efectiva (ADR-0013)', () => {
     }
   });
 
+  it('apply ejecuta solo el change set de este run y espera según su tipo', () => {
+    const plan = JSON.stringify(deploy.jobs.plan);
+    expect(plan).toContain('delete-change-set');
+    expect(deploy.jobs.plan.outputs.changeset).toBe('${{ steps.changeset.outputs.id }}');
+    const apply = JSON.stringify(deploy.jobs.apply);
+    expect(apply).toContain('needs.plan.outputs.changeset');
+    expect(apply).not.toContain('list-change-sets');
+    expect(apply).toContain('stack-create-complete');
+    expect(apply).toContain('ChangeSetType');
+  });
+
   it('el plan no ejecuta el change set', () => {
     expect(JSON.stringify(deploy.jobs.plan)).toContain('--no-execute-changeset');
     expect(JSON.stringify(deploy.jobs.plan)).toContain('--role-arn \\"$CFN_ROLE\\"');

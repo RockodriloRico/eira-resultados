@@ -95,6 +95,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      changeset: ${{ steps.changeset.outputs.id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,19 +124,29 @@ jobs:
           role-session-name: eira-${{ inputs.stage }}-plan-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Crear change set sin ejecutarlo
+        id: changeset
         working-directory: infrastructure
         env:
           STAGE: ${{ inputs.stage }}
+          STACK: eira-resultados-${{ inputs.stage }}
           BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
           CFN_ROLE: ${{ vars.AWS_CFN_EXECUTION_ROLE_ARN }}
         run: |
           # CloudFormation crea los recursos con su rol de ejecución, no con el rol de GitHub.
           [ -n "$CFN_ROLE" ] || { echo "::error::Falta AWS_CFN_EXECUTION_ROLE_ARN."; exit 1; }
+          # Elimina change sets pendientes de ejecuciones anteriores: apply solo ejecuta el de esta.
+          for old in $(aws cloudformation list-change-sets --stack-name "$STACK" \
+            --query "Summaries[].ChangeSetId" --output text 2>/dev/null || true); do
+            aws cloudformation delete-change-set --change-set-name "$old"
+          done
           # SAM busca samconfig.toml junto a la plantilla construida; se indica explícitamente.
           sam deploy --config-file "$GITHUB_WORKSPACE/infrastructure/samconfig.toml" --config-env "$STAGE" \
             --template-file ../.aws-sam/build/template.yaml \
             --s3-bucket "$BUCKET" --s3-prefix "eira-$STAGE" --role-arn "$CFN_ROLE" \
             --no-execute-changeset --no-confirm-changeset --no-fail-on-empty-changeset
+          CS=$(aws cloudformation list-change-sets --stack-name "$STACK" \
+            --query "Summaries[?Status=='CREATE_COMPLETE'].ChangeSetId | [0]" --output text)
+          echo "id=$CS" >> "$GITHUB_OUTPUT"
 
   apply:
     name: Ejecutar change set y publicar frontend (${{ inputs.stage }})
@@ -169,16 +181,22 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: eira-${{ inputs.stage }}-apply-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Ejecutar el último change set revisado
+      - name: Ejecutar el change set creado y aprobado en este run
         env:
           STACK: eira-resultados-${{ inputs.stage }}
+          CS: ${{ needs.plan.outputs.changeset }}
         run: |
-          CS=$(aws cloudformation list-change-sets --stack-name "$STACK" \
-            --query "sort_by(Summaries[?Status=='CREATE_COMPLETE'],&CreationTime)[-1].ChangeSetId" --output text)
-          if [ "$CS" != "None" ]; then
+          if [ -n "$CS" ] && [ "$CS" != "None" ]; then
+            TYPE=$(aws cloudformation describe-change-set --change-set-name "$CS" \
+              --query ChangeSetType --output text)
             aws cloudformation execute-change-set --change-set-name "$CS"
-            aws cloudformation wait stack-update-complete --stack-name "$STACK" ||
+            if [ "$TYPE" = "CREATE" ]; then
               aws cloudformation wait stack-create-complete --stack-name "$STACK"
+            else
+              aws cloudformation wait stack-update-complete --stack-name "$STACK"
+            fi
+          else
+            echo "Sin cambios de infraestructura en este run."
           fi
       - name: Generar config.json y publicar el frontend
         env:
