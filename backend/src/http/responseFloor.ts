@@ -15,6 +15,9 @@ export async function withResponseFloor<T>(minMs: number, work: () => Promise<T>
   } finally {
     const elapsed = performance.now() - started;
     if (elapsed > target && minMs > 0) logger.metric('ResponseFloorExceeded');
-    if (target > elapsed) await sleep(target - elapsed);
+    // setTimeout usa milisegundos enteros y el reloj del event loop, y puede despertar hasta ~1 ms
+    // antes de lo pedido: se repite hasta que el piso se cumpla medido con performance.now().
+    for (let left = target - elapsed; left > 0; left = target - (performance.now() - started))
+      await sleep(Math.ceil(left));
   }
 }

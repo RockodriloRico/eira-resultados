@@ -5,6 +5,7 @@ import {
   SECURITY_POLICY,
 } from '@eira/shared';
 import { GENERIC, HttpError } from '../http/responses.ts';
+import { logger } from '../observability/logger.ts';
 import type { AuditRepository } from '../repositories/auditRepository.ts';
 import type { ResultsRepository } from '../repositories/resultsRepository.ts';
 import type { DocumentStorage } from '../storage/DocumentStorage.ts';
@@ -55,6 +56,7 @@ export class PatientResultsService {
       !result.s3Key
     ) {
       // Mismo 404 para inexistente, ajeno o no aprobado: no revela resultados de otras pacientes.
+      logger.metric('DownloadDenied');
       await this.d.audit.tryAppend({
         eventType: 'DOWNLOAD_DENIED',
         outcome: 'FAILURE',

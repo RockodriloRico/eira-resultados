@@ -24,6 +24,12 @@ export default tseslint.config(
     ...security.configs.recommended,
   },
   {
+    // Scripts de operación (generación de config.json, verificación del build): Node + reglas de seguridad.
+    files: ['scripts/**/*.ts', 'frontend/scripts/**/*.ts'],
+    languageOptions: { globals: globals.node },
+    ...security.configs.recommended,
+  },
+  {
     files: ['infrastructure/**/*.ts'],
     languageOptions: { globals: globals.node },
   },

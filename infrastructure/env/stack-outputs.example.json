@@ -1,0 +1,16 @@
+{
+  "_comment": "Valores ficticios con el formato de `aws cloudformation describe-stacks` (Stacks[0].Outputs). No corresponden a recursos reales.",
+  "Outputs": [
+    {
+      "OutputKey": "ApiUrl",
+      "OutputValue": "https://abcde12345.execute-api.us-east-1.amazonaws.com/demo"
+    },
+    { "OutputKey": "FrontendUrl", "OutputValue": "https://d111111abcdef8.cloudfront.net" },
+    { "OutputKey": "UserPoolId", "OutputValue": "us-east-1_Ejemplo00" },
+    { "OutputKey": "UserPoolClientId", "OutputValue": "1example23456789abcdefghij" },
+    {
+      "OutputKey": "CognitoDomain",
+      "OutputValue": "https://eira-resultados-demo.auth.us-east-1.amazoncognito.com"
+    }
+  ]
+}

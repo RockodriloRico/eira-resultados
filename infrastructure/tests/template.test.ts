@@ -162,9 +162,9 @@ describe('DynamoDB: cinco tablas aprobadas', () => {
 });
 
 describe('KMS: llaves separadas para datos y documentos', () => {
-  it('define dos CMK con rotación automática y retención', () => {
+  it('define tres CMK (datos, documentos y operación) con rotación automática y retención', () => {
     const keys = resourcesOfType(t, 'AWS::KMS::Key');
-    expect(keys.map(([id]) => id).sort()).toEqual(['DataKey', 'DocumentsKey']);
+    expect(keys.map(([id]) => id).sort()).toEqual(['DataKey', 'DocumentsKey', 'OpsKey']);
     for (const [id, key] of keys) {
       expect(key.Properties!.EnableKeyRotation, id).toBe(true);
       expect(key.DeletionPolicy, id).toBe('Retain');
@@ -178,7 +178,8 @@ describe('KMS: llaves separadas para datos y documentos', () => {
       expect(secret.Properties!.GenerateSecretString, id).toBeDefined();
     }
     for (const [id, group] of resourcesOfType(t, 'AWS::Logs::LogGroup')) {
-      expect(group.Properties!.KmsKeyId, id).toEqual({ 'Fn::GetAtt': ['DataKey', 'Arn'] });
+      const key = id === 'WafLogGroup' ? 'OpsKey' : 'DataKey';
+      expect(group.Properties!.KmsKeyId, id).toEqual({ 'Fn::GetAtt': [key, 'Arn'] });
     }
     const sse =
       R.DocumentsBucket!.Properties!.BucketEncryption.ServerSideEncryptionConfiguration[0];
@@ -217,9 +218,14 @@ describe('S3 y CloudFront', () => {
     RestrictPublicBuckets: true,
   };
 
-  it('ambos buckets son privados, sin ACL y con versionado', () => {
+  it('todos los buckets son privados, sin ACL y con versionado', () => {
     const buckets = resourcesOfType(t, 'AWS::S3::Bucket');
-    expect(buckets.map(([id]) => id).sort()).toEqual(['DocumentsBucket', 'FrontendBucket']);
+    expect(buckets.map(([id]) => id).sort()).toEqual([
+      'AccessLogsBucket',
+      'ComplianceLogsBucket',
+      'DocumentsBucket',
+      'FrontendBucket',
+    ]);
     for (const [id, bucket] of buckets) {
       const p = bucket.Properties!;
       expect(p.PublicAccessBlockConfiguration, id).toEqual(fullBlock);
@@ -295,6 +301,34 @@ describe('S3 y CloudFront', () => {
 
 describe('API Gateway REST', () => {
   const api = R.EiraApi!.Properties!;
+
+  it('rutas administrativas: Cognito authorizer con scopes y cliente y emisor esperados en Lambda', () => {
+    const fns = [
+      'AdminPatientsFunction',
+      'AdminResultsFunction',
+      'AdminReviewUrlFunction',
+      'AdminAuditFunction',
+    ];
+    for (const id of fns) {
+      const props = R[id]!.Properties!;
+      // Con AuthorizationScopes, el authorizer solo acepta access tokens (firma, emisor y exp).
+      for (const ev of Object.values(props.Events as Record<string, any>)) {
+        expect(ev.Properties.Auth, id).toEqual({
+          Authorizer: 'CognitoAuthorizer',
+          AuthorizationScopes: ['openid'],
+        });
+      }
+      expect(props.Environment.Variables.ADMIN_CLIENT_ID, id).toEqual({
+        Ref: 'AdminUserPoolClient',
+      });
+      expect(props.Environment.Variables.ADMIN_TOKEN_ISSUER, id).toEqual({
+        'Fn::Sub': 'https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}',
+      });
+    }
+    expect(api.Auth.Authorizers.CognitoAuthorizer.UserPoolArn).toEqual({
+      'Fn::GetAtt': ['AdminUserPool', 'Arn'],
+    });
+  });
 
   it('crea la API (y con ella el stage) después de AWS::ApiGateway::Account cuando se gestiona', () => {
     expect(R.EiraApi!.DependsOn).toBe('ApiGatewayAccountReady');
@@ -429,7 +463,7 @@ describe('WAF regional', () => {
 describe('IAM: un rol por función y mínimo privilegio', () => {
   const functions = resourcesOfType(t, 'AWS::Serverless::Function');
   const roles = resourcesOfType(t, 'AWS::IAM::Role').filter(
-    ([id]) => id !== 'ApiGatewayCloudWatchRole',
+    ([id]) => !['ApiGatewayCloudWatchRole', 'ConfigRecorderRole'].includes(id),
   );
   const roleOf = (fn: Resource) =>
     (fn.Properties!.Role as { 'Fn::GetAtt': string[] })['Fn::GetAtt'][0]!;
@@ -626,13 +660,15 @@ describe('Lambda: esqueletos Node.js 24 / arm64', () => {
     }
   });
 
-  it('demoPin depende de ExposeDemoPin y no hay permisos SNS', () => {
+  it('demoPin depende de ExposeDemoPin y ningún rol tiene permisos SNS', () => {
     for (const [id, fn] of resourcesOfType(t, 'AWS::Serverless::Function')) {
       const flag = fn.Properties!.Environment?.Variables?.DEMO_PIN_ENABLED;
       if (flag !== undefined)
         expect(flag, id).toEqual({ 'Fn::If': ['ExposeDemoPin', 'true', 'false'] });
     }
-    expect(json(t)).not.toMatch(/"sns:/);
+    expect(json(resourcesOfType(t, 'AWS::IAM::Role'))).not.toMatch(/"sns:/);
+    expect(json(R.DataKey)).not.toMatch(/cloudwatch|cloudtrail/);
+    expect(json(R.DocumentsKey)).not.toMatch(/cloudwatch|cloudtrail/);
   });
 });
 
@@ -662,5 +698,182 @@ describe('Outputs y configuración', () => {
       );
       expect(failedRules(t, values as Record<string, string>), stage).toEqual([]);
     }
+  });
+});
+
+describe('Observabilidad: alarmas, métricas y dashboard (ADR-0012)', () => {
+  const alarms = resourcesOfType(t, 'AWS::CloudWatch::Alarm');
+  const functions = resourcesOfType(t, 'AWS::Serverless::Function');
+
+  it('el tema SNS está cifrado con OpsKey, sin suscripciones y solo CloudWatch publica', () => {
+    expect(resourcesOfType(t, 'AWS::SNS::Topic').map(([id]) => id)).toEqual(['OpsAlarmsTopic']);
+    expect(resourcesOfType(t, 'AWS::SNS::Subscription')).toEqual([]);
+    expect(R.OpsAlarmsTopic!.Properties!.Subscription).toBeUndefined();
+    expect(R.OpsAlarmsTopic!.Properties!.KmsMasterKeyId).toEqual({ Ref: 'OpsKey' });
+    const statements = R.OpsAlarmsTopicPolicy!.Properties!.PolicyDocument.Statement as any[];
+    const allows = statements.filter((s) => s.Effect === 'Allow');
+    expect(allows).toHaveLength(1);
+    expect(allows[0]).toMatchObject({
+      Principal: { Service: 'cloudwatch.amazonaws.com' },
+      Action: 'sns:Publish',
+    });
+    expect(json(allows[0].Condition.ArnLike)).toContain(':alarm:eira-${Stage}-*');
+    const sid = (id: string) => statements.find((s) => s.Sid === id);
+    expect(sid('DenyPublishFromOtherPrincipals')?.Condition).toEqual({
+      StringNotEquals: { 'aws:PrincipalServiceName': 'cloudwatch.amazonaws.com' },
+    });
+    expect(sid('EmailSubscriptionsOnly')?.Condition).toEqual({
+      StringNotEquals: { 'sns:Protocol': 'email' },
+    });
+  });
+
+  it('cada función Lambda tiene alarma de errores', () => {
+    for (const [id] of functions) {
+      const found = alarms.some(
+        ([, a]) =>
+          a.Properties!.MetricName === 'Errors' &&
+          json(a.Properties!.Dimensions) === json([{ Name: 'FunctionName', Value: { Ref: id } }]),
+      );
+      expect(found, id).toBe(true);
+    }
+  });
+
+  it('cubre API Gateway, DynamoDB, WAF y métricas de aplicación', () => {
+    const metrics = alarms.map(([, a]) => `${a.Properties!.Namespace}/${a.Properties!.MetricName}`);
+    for (const m of [
+      'AWS/ApiGateway/5XXError',
+      'AWS/ApiGateway/4XXError',
+      'AWS/ApiGateway/Latency',
+      'AWS/Lambda/Throttles',
+      'AWS/WAFV2/BlockedRequests',
+      'EiraResultados/AuditWriteFailed',
+      'EiraResultados/PinChallengeLocked',
+      'EiraResultados/DownloadDenied',
+      'EiraResultados/AdminForbidden',
+      'EiraResultados/ResponseFloorExceeded',
+    ])
+      expect(metrics).toContain(m);
+    expect(json(R.DynamoDbThrottlesAlarm)).toContain('WriteThrottleEvents');
+    expect(R.WafBlockedSpikeAlarm!.Condition).toBe('CreateWaf');
+  });
+
+  it('todas las alarmas notifican solo al tema operativo y con nombre del entorno', () => {
+    expect(alarms.length).toBeGreaterThanOrEqual(20);
+    for (const [id, a] of alarms) {
+      expect(a.Properties!.AlarmActions, id).toEqual([{ Ref: 'OpsAlarmsTopic' }]);
+      expect(a.Properties!.OKActions, id).toEqual([{ Ref: 'OpsAlarmsTopic' }]);
+      expect(json(a.Properties!.AlarmName), id).toMatch(/^\{"Fn::Sub":"eira-\$\{Stage\}-/);
+      expect(a.Properties!.TreatMissingData, id).toBe('notBreaching');
+    }
+  });
+
+  it('las métricas de aplicación solo usan la dimensión Stage (sin identificadores)', () => {
+    for (const [id, a] of alarms.filter(([, a]) => a.Properties!.Namespace === 'EiraResultados'))
+      expect(a.Properties!.Dimensions, id).toEqual([{ Name: 'Stage', Value: { Ref: 'Stage' } }]);
+    const body = (R.OpsDashboard!.Properties!.DashboardBody as { 'Fn::Sub': string })['Fn::Sub'];
+    const dashboard = JSON.parse(body.replaceAll(/\$\{[^}]+\}/g, 'x'));
+    expect(dashboard.widgets.length).toBeGreaterThanOrEqual(6);
+    for (const m of dashboard.widgets.flatMap((w: any) => w.properties.metrics))
+      if (m[0] === 'EiraResultados') expect(m.slice(2, 4)).toEqual(['Stage', 'x']);
+  });
+});
+
+describe('Registro de cumplimiento: solo prod y con parámetros (ADR-0012)', () => {
+  const prod = { ...base, Stage: 'prod', SmsProvider: 'sns' };
+  const flags = [
+    'EnableWafLogs',
+    'EnableS3AccessLogs',
+    'EnableCloudTrailDataEvents',
+    'EnableAwsConfig',
+  ];
+
+  it.each(flags)('%s está desactivado por defecto y se rechaza fuera de prod', (flag) => {
+    expect(t.Parameters[flag]!.Default).toBe('false');
+    for (const Stage of ['dev', 'demo'])
+      expect(failedRules(t, { ...base, Stage, [flag]: 'true' })).toContain(
+        `${flag} solo se admite en Stage=prod`,
+      );
+    expect(failedRules(t, { ...prod, [flag]: 'true' })).toEqual([]);
+  });
+
+  it('las condiciones exigen prod aunque se eliminen las Rules', () => {
+    const all = Object.fromEntries(flags.map((f) => [f, 'true']));
+    for (const c of [
+      'CreateWafLogs',
+      'CreateS3AccessLogs',
+      'CreateDataEventsTrail',
+      'CreateAwsConfig',
+    ]) {
+      expect(condition(t, c, { ...base, Stage: 'demo', ...all }), c).toBe(false);
+      expect(condition(t, c, { ...prod, ...all }), c).toBe(true);
+      expect(condition(t, c, prod), c).toBe(false);
+    }
+  });
+
+  it('cada recurso de registro depende de su condición', () => {
+    const expected: Record<string, string> = {
+      WafLogGroup: 'CreateWafLogs',
+      WafLogging: 'CreateWafLogs',
+      AccessLogsBucket: 'CreateS3AccessLogs',
+      AccessLogsBucketPolicy: 'CreateS3AccessLogs',
+      ComplianceLogsBucket: 'CreateComplianceBucket',
+      ComplianceLogsBucketPolicy: 'CreateComplianceBucket',
+      DataEventsTrail: 'CreateDataEventsTrail',
+      ConfigRecorderRole: 'CreateAwsConfig',
+      ConfigRecorder: 'CreateAwsConfig',
+      ConfigDeliveryChannel: 'CreateAwsConfig',
+    };
+    for (const [id, c] of Object.entries(expected)) expect(R[id]!.Condition, id).toBe(c);
+    for (const [id] of resourcesOfType(t, 'AWS::Config::ConfigRule'))
+      expect(R[id]!.Condition, id).toBe('CreateAwsConfig');
+    for (const id of ['DocumentsBucket', 'FrontendBucket'])
+      expect(R[id]!.Properties!.LoggingConfiguration['Fn::If'][0], id).toBe('CreateS3AccessLogs');
+  });
+
+  it('WAF solo registra BLOCK/COUNT y redacta Authorization, cookies y query string', () => {
+    const p = R.WafLogging!.Properties!;
+    expect(p.RedactedFields).toEqual([
+      { SingleHeader: { Name: 'authorization' } },
+      { SingleHeader: { Name: 'cookie' } },
+      { QueryString: {} },
+    ]);
+    expect(p.LoggingFilter.DefaultBehavior).toBe('DROP');
+    expect(json(p.LoggingFilter.Filters)).toContain('BLOCK');
+    expect(R.WafLogGroup!.Properties!.RetentionInDays).toBe(90);
+  });
+
+  it('el bucket de logs de acceso solo recibe de S3 logging y de los buckets de EIRA', () => {
+    const [allow] = (
+      R.AccessLogsBucketPolicy!.Properties!.PolicyDocument.Statement as any[]
+    ).filter((s) => s.Effect === 'Allow');
+    expect(allow.Principal).toEqual({ Service: 'logging.s3.amazonaws.com' });
+    expect(json(allow.Condition)).toContain('DocumentsBucket');
+    expect(json(allow.Condition)).toContain('FrontendBucket');
+    expect(R.AccessLogsBucket!.Properties!.LifecycleConfiguration.Rules[0].ExpirationInDays).toBe(
+      365,
+    );
+  });
+
+  it('el trail registra datos de documentos y tablas sensibles, cifrado y con validación', () => {
+    const p = R.DataEventsTrail!.Properties!;
+    expect(p.KMSKeyId).toEqual({ 'Fn::GetAtt': ['OpsKey', 'Arn'] });
+    expect(p.EnableLogFileValidation).toBe(true);
+    const selectors = json(p.AdvancedEventSelectors);
+    for (const r of ['DocumentsBucket', 'PatientsTable', 'ResultsTable', 'AuditLogTable'])
+      expect(selectors).toContain(r);
+    expect(selectors).not.toContain('Management');
+  });
+
+  it('AWS Config graba tipos acotados, a diario', () => {
+    const p = R.ConfigRecorder!.Properties!;
+    expect(p.RecordingGroup.AllSupported).toBe(false);
+    expect(p.RecordingGroup.ResourceTypes.length).toBeLessThanOrEqual(10);
+    expect(p.RecordingMode.RecordingFrequency).toBe('DAILY');
+    expect(R.ConfigDeliveryChannel!.DependsOn).toBe('ConfigRecorder');
+    const kms = statementsOf(R.ConfigRecorderRole!).find((s) =>
+      asArray<string>(s.Action).includes('kms:GenerateDataKey'),
+    );
+    expect(asArray<string>(kms!.Action).sort()).toEqual(['kms:Decrypt', 'kms:GenerateDataKey']);
+    expect(kms!.Condition.StringEquals['kms:ViaService']).toBeDefined();
   });
 });

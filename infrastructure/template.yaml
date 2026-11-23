@@ -30,6 +30,28 @@ Parameters:
     Description: >-
       Crea AWS::ApiGateway::Account (ajuste único por cuenta y región) para los access logs.
       Activar solo si la cuenta no tiene ya un rol de CloudWatch para API Gateway.
+  EnableWafLogs:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: Logs de WAF (solo solicitudes BLOCK/COUNT, Authorization redactado). Solo prod.
+  EnableS3AccessLogs:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: Logs de acceso de S3 de los buckets de documentos y frontend. Solo prod.
+  EnableCloudTrailDataEvents:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: Trail de eventos de datos (objetos de documentos y tablas con datos de pacientes). Solo prod.
+  EnableAwsConfig:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: >-
+      Grabador de AWS Config (tipos acotados) y reglas administradas. Solo prod, y solo si la
+      cuenta y región no tienen ya un grabador (uno por cuenta y región).
 
 Mappings:
   StageConfig:
@@ -60,6 +82,17 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref SmsProvider, mock]]
         AssertDescription: Stage=prod no admite SmsProvider=mock
+  ComplianceLoggingOnlyInProd:
+    RuleCondition: !Not [!Equals [!Ref Stage, prod]]
+    Assertions:
+      - Assert: !Equals [!Ref EnableWafLogs, 'false']
+        AssertDescription: EnableWafLogs solo se admite en Stage=prod
+      - Assert: !Equals [!Ref EnableS3AccessLogs, 'false']
+        AssertDescription: EnableS3AccessLogs solo se admite en Stage=prod
+      - Assert: !Equals [!Ref EnableCloudTrailDataEvents, 'false']
+        AssertDescription: EnableCloudTrailDataEvents solo se admite en Stage=prod
+      - Assert: !Equals [!Ref EnableAwsConfig, 'false']
+        AssertDescription: EnableAwsConfig solo se admite en Stage=prod
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
@@ -67,6 +100,12 @@ Conditions:
   CreateWaf: !Or [!Condition IsProd, !Equals [!Ref EnableWaf, 'true']]
   ExposeDemoPin: !And [!Equals [!Ref Stage, demo], !Equals [!Ref SmsProvider, mock]]
   CreateApiGatewayAccountRole: !Equals [!Ref ManageApiGatewayAccountRole, 'true']
+  # Registro de cumplimiento: exige prod además del parámetro (defensa si se eliminan las Rules).
+  CreateWafLogs: !And [!Condition IsProd, !Equals [!Ref EnableWafLogs, 'true']]
+  CreateS3AccessLogs: !And [!Condition IsProd, !Equals [!Ref EnableS3AccessLogs, 'true']]
+  CreateDataEventsTrail: !And [!Condition IsProd, !Equals [!Ref EnableCloudTrailDataEvents, 'true']]
+  CreateAwsConfig: !And [!Condition IsProd, !Equals [!Ref EnableAwsConfig, 'true']]
+  CreateComplianceBucket: !Or [!Condition CreateDataEventsTrail, !Condition CreateAwsConfig]
 
 Globals:
   Function:
@@ -419,12 +458,17 @@ Resources:
       checkov:
         skip:
           - id: CKV_AWS_18
-            comment: Logs de acceso de S3 y eventos de datos de CloudTrail quedan fuera de la etapa 1 (decisión 8).
+            comment: Logs de acceso con EnableS3AccessLogs (solo prod, ADR-0012); desactivados en dev y demo por costo.
           - id: CKV_AWS_144
             comment: Replicación entre regiones fuera del alcance del MVP.
           - id: CKV2_AWS_62
             comment: Sin consumidores de eventos en el MVP.
     Properties:
+      LoggingConfiguration: !If
+        - CreateS3AccessLogs
+        - DestinationBucketName: !Ref AccessLogsBucket
+          LogFilePrefix: documents/
+        - !Ref AWS::NoValue
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -539,7 +583,7 @@ Resources:
       checkov:
         skip:
           - id: CKV_AWS_18
-            comment: Logs de acceso fuera de la etapa 1 (decisión 8).
+            comment: Logs de acceso con EnableS3AccessLogs (solo prod, ADR-0012); desactivados en dev y demo por costo.
           - id: CKV_AWS_144
             comment: Replicación entre regiones fuera del alcance del MVP.
           - id: CKV_AWS_145
@@ -547,6 +591,11 @@ Resources:
           - id: CKV2_AWS_62
             comment: Sin consumidores de eventos en el MVP.
     Properties:
+      LoggingConfiguration: !If
+        - CreateS3AccessLogs
+        - DestinationBucketName: !Ref AccessLogsBucket
+          LogFilePrefix: frontend/
+        - !Ref AWS::NoValue
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -1791,6 +1840,8 @@ Resources:
         LogGroup: !Ref AdminPatientsLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           PATIENTS_TABLE: !Ref PatientsTable
           AUDIT_LOG_TABLE: !Ref AuditLogTable
           IDENTITY_HMAC_SECRET_ARN: !Ref IdentityHmacSecret
@@ -1846,6 +1897,8 @@ Resources:
         LogGroup: !Ref AdminResultsLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           PATIENTS_TABLE: !Ref PatientsTable
           RESULTS_TABLE: !Ref ResultsTable
           AUDIT_LOG_TABLE: !Ref AuditLogTable
@@ -1921,6 +1974,8 @@ Resources:
         LogGroup: !Ref AdminReviewUrlLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           RESULTS_TABLE: !Ref ResultsTable
           AUDIT_LOG_TABLE: !Ref AuditLogTable
           DOCUMENTS_BUCKET: !Ref DocumentsBucket
@@ -1958,6 +2013,8 @@ Resources:
         LogGroup: !Ref AdminAuditLogGroup
       Environment:
         Variables:
+          ADMIN_CLIENT_ID: !Ref AdminUserPoolClient
+          ADMIN_TOKEN_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}
           AUDIT_LOG_TABLE: !Ref AuditLogTable
       Events:
         Api:
@@ -2165,7 +2222,7 @@ Resources:
       checkov:
         skip:
           - id: CKV2_AWS_31
-            comment: Logs de WAF fuera de la etapa 1 por costo (decisión 8); métricas activas, muestras desactivadas para no retener encabezados con tokens.
+            comment: Logs de WAF con EnableWafLogs (solo prod, ADR-0012; Authorization redactado). Muestras desactivadas para no retener encabezados con tokens.
     Properties:
       Name: !Sub eira-${Stage}-api
       Description: Managed rules and per-IP rate limits for the REST API
@@ -2303,6 +2360,1062 @@ Resources:
       ResourceArn: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${EiraApi}/stages/${EiraApi.Stage}
       WebACLArn: !GetAtt ApiWebAcl.Arn
 
+  # ---------------------------------------------------------------- Observabilidad (ADR-0012)
+  OpsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub EIRA ${Stage} - alarmas operativas (SNS) y registro de cumplimiento
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: CloudWatchAlarmsToEncryptedTopic
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: CloudTrailEncryptLogs
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/eira-${Stage}-data-events
+              StringLike:
+                kms:EncryptionContext:aws:cloudtrail:arn: !Sub arn:${AWS::Partition}:cloudtrail:*:${AWS::AccountId}:trail/*
+          - Sid: CloudTrailDescribeKey
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/eira-${Stage}-data-events
+          - Sid: CloudWatchLogsWafLogGroup
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:aws-waf-logs-eira-${Stage}
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+        - Key: Stage
+          Value: !Ref Stage
+
+  OpsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/eira-${Stage}-ops
+      TargetKeyId: !Ref OpsKey
+
+  # Sin suscripciones en la plantilla: se agregan a mano (solo correo) tras autorización expresa.
+  OpsAlarmsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub eira-${Stage}-ops-alarms
+      DisplayName: !Sub EIRA ${Stage} alarmas
+      KmsMasterKeyId: !Ref OpsKey
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+        - Key: Stage
+          Value: !Ref Stage
+
+  OpsAlarmsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref OpsAlarmsTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CloudWatchAlarmsOnly
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OpsAlarmsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:eira-${Stage}-*
+          - Sid: DenyPublishFromOtherPrincipals
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref OpsAlarmsTopic
+            Condition:
+              StringNotEquals:
+                aws:PrincipalServiceName: cloudwatch.amazonaws.com
+          - Sid: EmailSubscriptionsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Subscribe
+            Resource: !Ref OpsAlarmsTopic
+            Condition:
+              StringNotEquals:
+                sns:Protocol: email
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: sns:*
+            Resource: !Ref OpsAlarmsTopic
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  AccessRequestErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-access-request-errors
+      AlarmDescription: Errores no controlados en la función access-request
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AccessRequestFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AccessResendErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-access-resend-errors
+      AlarmDescription: Errores no controlados en la función access-resend
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AccessResendFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AccessVerifyErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-access-verify-errors
+      AlarmDescription: Errores no controlados en la función access-verify
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AccessVerifyFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AccessLogoutErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-access-logout-errors
+      AlarmDescription: Errores no controlados en la función access-logout
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AccessLogoutFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  SessionAuthorizerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-session-authorizer-errors
+      AlarmDescription: Errores no controlados en la función session-authorizer
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SessionAuthorizerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  ListResultsErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-list-results-errors
+      AlarmDescription: Errores no controlados en la función list-results
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ListResultsFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  DownloadUrlErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-download-url-errors
+      AlarmDescription: Errores no controlados en la función download-url
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DownloadUrlFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AdminPatientsErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-admin-patients-errors
+      AlarmDescription: Errores no controlados en la función admin-patients
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AdminPatientsFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AdminResultsErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-admin-results-errors
+      AlarmDescription: Errores no controlados en la función admin-results
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AdminResultsFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AdminReviewUrlErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-admin-review-url-errors
+      AlarmDescription: Errores no controlados en la función admin-review-url
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AdminReviewUrlFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AdminAuditErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-admin-audit-errors
+      AlarmDescription: Errores no controlados en la función admin-audit
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AdminAuditFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-lambda-throttles
+      AlarmDescription: Throttling de Lambda en la cuenta y región (concurrencia agotada)
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-api-5xx
+      AlarmDescription: Respuestas 5XX de la API REST
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub eira-${Stage}-api
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  Api4xxSpikeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-api-4xx-spike
+      AlarmDescription: Pico de respuestas 4XX (posible enumeración o abuso)
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/ApiGateway
+      MetricName: 4XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub eira-${Stage}-api
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 200
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  ApiLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-api-latency-p99
+      AlarmDescription: Latencia p99 sobre 3 s (el piso anti-enumeración es 1 s + jitter)
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/ApiGateway
+      MetricName: Latency
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub eira-${Stage}-api
+        - Name: Stage
+          Value: !Ref Stage
+      ExtendedStatistic: p99
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 3000
+      ComparisonOperator: GreaterThanThreshold
+  DynamoDbThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-dynamodb-throttles
+      AlarmDescription: Eventos de throttling en las tablas de EIRA
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Metrics:
+        - Id: total
+          Label: Throttles DynamoDB
+          ReturnData: true
+          Expression: SUM([read0,write0,read1,write1,read2,write2,read3,write3,read4,write4])
+        - Id: read0
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref PatientsTable
+            Period: 300
+            Stat: Sum
+        - Id: write0
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref PatientsTable
+            Period: 300
+            Stat: Sum
+        - Id: read1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref PinChallengesTable
+            Period: 300
+            Stat: Sum
+        - Id: write1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref PinChallengesTable
+            Period: 300
+            Stat: Sum
+        - Id: read2
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AccessSessionsTable
+            Period: 300
+            Stat: Sum
+        - Id: write2
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AccessSessionsTable
+            Period: 300
+            Stat: Sum
+        - Id: read3
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref ResultsTable
+            Period: 300
+            Stat: Sum
+        - Id: write3
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref ResultsTable
+            Period: 300
+            Stat: Sum
+        - Id: read4
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AuditLogTable
+            Period: 300
+            Stat: Sum
+        - Id: write4
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AuditLogTable
+            Period: 300
+            Stat: Sum
+  WafBlockedSpikeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateWaf
+    Properties:
+      AlarmName: !Sub eira-${Stage}-waf-blocked-spike
+      AlarmDescription: Pico de solicitudes bloqueadas por WAF
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: AWS/WAFV2
+      MetricName: BlockedRequests
+      Dimensions:
+        - Name: WebACL
+          Value: !Sub eira-${Stage}-api
+        - Name: Region
+          Value: !Ref AWS::Region
+        - Name: Rule
+          Value: ALL
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AppAuditWriteFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-app-audit-write-failed
+      AlarmDescription: Fallo al escribir en AuditLog
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: EiraResultados
+      MetricName: AuditWriteFailed
+      Dimensions:
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AppSmsSendFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-app-sms-send-failed
+      AlarmDescription: Fallo del proveedor de SMS
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: EiraResultados
+      MetricName: SmsSendFailed
+      Dimensions:
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AppNonSyntheticRecordInDemoAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-app-non-synthetic-in-demo
+      AlarmDescription: Registro no sintético detectado en demo
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: EiraResultados
+      MetricName: NonSyntheticRecordInDemo
+      Dimensions:
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AppResponseFloorExceededAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-app-response-floor-exceeded
+      AlarmDescription: Respuestas más lentas que el piso anti-enumeración
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: EiraResultados
+      MetricName: ResponseFloorExceeded
+      Dimensions:
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AppPinChallengeLockedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-app-pin-locked-spike
+      AlarmDescription: Pico de retos de PIN bloqueados (posible fuerza bruta)
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: EiraResultados
+      MetricName: PinChallengeLocked
+      Dimensions:
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 20
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AppDownloadDeniedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-app-download-denied-spike
+      AlarmDescription: Pico de descargas denegadas (posible enumeración de resultados)
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: EiraResultados
+      MetricName: DownloadDenied
+      Dimensions:
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 20
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  AppAdminForbiddenAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub eira-${Stage}-app-admin-forbidden
+      AlarmDescription: Usuario de Cognito sin grupo admins intentó acceder
+      AlarmActions: [!Ref OpsAlarmsTopic]
+      OKActions: [!Ref OpsAlarmsTopic]
+      TreatMissingData: notBreaching
+      Namespace: EiraResultados
+      MetricName: AdminForbidden
+      Dimensions:
+        - Name: Stage
+          Value: !Ref Stage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  OpsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub eira-${Stage}-operacion
+      DashboardBody: !Sub '{"widgets":[{"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"title":"API: solicitudes y errores","region":"${AWS::Region}","stat":"Sum","period":300,"metrics":[["AWS/ApiGateway","Count","ApiName","eira-${Stage}-api","Stage","${Stage}"],["AWS/ApiGateway","4XXError","ApiName","eira-${Stage}-api","Stage","${Stage}"],["AWS/ApiGateway","5XXError","ApiName","eira-${Stage}-api","Stage","${Stage}"]]}},{"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"API: latencia p99 (ms)","region":"${AWS::Region}","stat":"p99","period":300,"metrics":[["AWS/ApiGateway","Latency","ApiName","eira-${Stage}-api","Stage","${Stage}"]]}},{"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Lambda: errores","region":"${AWS::Region}","stat":"Sum","period":300,"metrics":[["AWS/Lambda","Errors","FunctionName","${AccessRequestFunction}"],["AWS/Lambda","Errors","FunctionName","${AccessResendFunction}"],["AWS/Lambda","Errors","FunctionName","${AccessVerifyFunction}"],["AWS/Lambda","Errors","FunctionName","${AccessLogoutFunction}"],["AWS/Lambda","Errors","FunctionName","${SessionAuthorizerFunction}"],["AWS/Lambda","Errors","FunctionName","${ListResultsFunction}"],["AWS/Lambda","Errors","FunctionName","${DownloadUrlFunction}"],["AWS/Lambda","Errors","FunctionName","${AdminPatientsFunction}"],["AWS/Lambda","Errors","FunctionName","${AdminResultsFunction}"],["AWS/Lambda","Errors","FunctionName","${AdminReviewUrlFunction}"],["AWS/Lambda","Errors","FunctionName","${AdminAuditFunction}"]]}},{"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"Lambda: duración p99 (ms)","region":"${AWS::Region}","stat":"p99","period":300,"metrics":[["AWS/Lambda","Duration","FunctionName","${AccessRequestFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${AccessResendFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${AccessVerifyFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${AccessLogoutFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${SessionAuthorizerFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${ListResultsFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${DownloadUrlFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${AdminPatientsFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${AdminResultsFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${AdminReviewUrlFunction}",{"stat":"p99"}],["AWS/Lambda","Duration","FunctionName","${AdminAuditFunction}",{"stat":"p99"}]]}},{"type":"metric","x":0,"y":12,"width":12,"height":6,"properties":{"title":"DynamoDB: throttling","region":"${AWS::Region}","stat":"Sum","period":300,"metrics":[["AWS/DynamoDB","ReadThrottleEvents","TableName","${PatientsTable}"],["AWS/DynamoDB","WriteThrottleEvents","TableName","${PatientsTable}"],["AWS/DynamoDB","ReadThrottleEvents","TableName","${PinChallengesTable}"],["AWS/DynamoDB","WriteThrottleEvents","TableName","${PinChallengesTable}"],["AWS/DynamoDB","ReadThrottleEvents","TableName","${AccessSessionsTable}"],["AWS/DynamoDB","WriteThrottleEvents","TableName","${AccessSessionsTable}"],["AWS/DynamoDB","ReadThrottleEvents","TableName","${ResultsTable}"],["AWS/DynamoDB","WriteThrottleEvents","TableName","${ResultsTable}"],["AWS/DynamoDB","ReadThrottleEvents","TableName","${AuditLogTable}"],["AWS/DynamoDB","WriteThrottleEvents","TableName","${AuditLogTable}"]]}},{"type":"metric","x":12,"y":12,"width":12,"height":6,"properties":{"title":"WAF: bloqueadas","region":"${AWS::Region}","stat":"Sum","period":300,"metrics":[["AWS/WAFV2","BlockedRequests","WebACL","eira-${Stage}-api","Region","${AWS::Region}","Rule","ALL"]]}},{"type":"metric","x":0,"y":18,"width":12,"height":6,"properties":{"title":"Aplicación (conteos, sin datos personales)","region":"${AWS::Region}","stat":"Sum","period":300,"metrics":[["EiraResultados","AuditWriteFailed","Stage","${Stage}"],["EiraResultados","SmsSendFailed","Stage","${Stage}"],["EiraResultados","NonSyntheticRecordInDemo","Stage","${Stage}"],["EiraResultados","ResponseFloorExceeded","Stage","${Stage}"],["EiraResultados","PinChallengeLocked","Stage","${Stage}"],["EiraResultados","DownloadDenied","Stage","${Stage}"],["EiraResultados","AdminForbidden","Stage","${Stage}"],["EiraResultados","PinVerifyFailed","Stage","${Stage}"]]}}]}'
+
+  # ---------------------------------------------------------------- Registro de cumplimiento (solo prod)
+  WafLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateWafLogs
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub aws-waf-logs-eira-${Stage}
+      RetentionInDays: 90
+      KmsKeyId: !GetAtt OpsKey.Arn
+
+  WafLogging:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Condition: CreateWafLogs
+    Properties:
+      ResourceArn: !GetAtt ApiWebAcl.Arn
+      LogDestinationConfigs:
+        - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${WafLogGroup}
+      RedactedFields:
+        - SingleHeader:
+            Name: authorization
+        - SingleHeader:
+            Name: cookie
+        - QueryString: {}
+      LoggingFilter:
+        DefaultBehavior: DROP
+        Filters:
+          - Behavior: KEEP
+            Requirement: MEETS_ANY
+            Conditions:
+              - ActionCondition:
+                  Action: BLOCK
+              - ActionCondition:
+                  Action: COUNT
+
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3AccessLogs
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Es el destino de los logs de acceso; registrarse a sí mismo crearía un bucle.
+          - id: CKV_AWS_144
+            comment: Replicación entre regiones fuera del alcance del MVP.
+          - id: CKV_AWS_145
+            comment: S3 server access logging solo admite destino con SSE-S3 (no SSE-KMS).
+          - id: CKV2_AWS_62
+            comment: Sin consumidores de eventos.
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAccessLogs
+            Status: Enabled
+            ExpirationInDays: 365
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateS3AccessLogs
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ServerAccessLogsOnly
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${AccessLogsBucket.Arn}/*
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn:
+                  - !GetAtt DocumentsBucket.Arn
+                  - !GetAtt FrontendBucket.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt AccessLogsBucket.Arn
+              - !Sub ${AccessLogsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  ComplianceLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateComplianceBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Bucket de registro (CloudTrail y Config); su acceso queda en los eventos de gestión de CloudTrail de la cuenta.
+          - id: CKV_AWS_144
+            comment: Replicación entre regiones fuera del alcance del MVP.
+          - id: CKV2_AWS_62
+            comment: Sin consumidores de eventos.
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt OpsKey.Arn
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireComplianceLogs
+            Status: Enabled
+            ExpirationInDays: 400
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  ComplianceLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateComplianceBucket
+    Properties:
+      Bucket: !Ref ComplianceLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt ComplianceLogsBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/eira-${Stage}-data-events
+          - Sid: CloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${ComplianceLogsBucket.Arn}/cloudtrail/AWSLogs/${AWS::AccountId}/*
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/eira-${Stage}-data-events
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ComplianceLogsBucket.Arn
+              - !Sub ${ComplianceLogsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  DataEventsTrail:
+    Type: AWS::CloudTrail::Trail
+    Condition: CreateDataEventsTrail
+    DependsOn: ComplianceLogsBucketPolicy
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_67
+            comment: Trail regional y solo de eventos de datos de los recursos de EIRA; los eventos de gestión los cubre el trail de la cuenta.
+          - id: CKV_AWS_252
+            comment: Sin notificación SNS por archivo; SNS se reserva para alarmas operativas.
+          - id: CKV2_AWS_10
+            comment: Se consulta desde S3 (Athena); enviar a CloudWatch Logs duplicaría costo.
+    Properties:
+      TrailName: !Sub eira-${Stage}-data-events
+      S3BucketName: !Ref ComplianceLogsBucket
+      S3KeyPrefix: cloudtrail
+      KMSKeyId: !GetAtt OpsKey.Arn
+      IsLogging: true
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: false
+      EnableLogFileValidation: true
+      AdvancedEventSelectors:
+        - Name: Objetos del bucket de documentos
+          FieldSelectors:
+            - Field: eventCategory
+              Equals: [Data]
+            - Field: resources.type
+              Equals: [AWS::S3::Object]
+            - Field: resources.ARN
+              StartsWith:
+                - !Sub ${DocumentsBucket.Arn}/
+        - Name: Tablas con datos de pacientes, resultados y auditoria
+          FieldSelectors:
+            - Field: eventCategory
+              Equals: [Data]
+            - Field: resources.type
+              Equals: [AWS::DynamoDB::Table]
+            - Field: resources.ARN
+              Equals:
+                - !GetAtt PatientsTable.Arn
+                - !GetAtt ResultsTable.Arn
+                - !GetAtt AuditLogTable.Arn
+      Tags:
+        - Key: Project
+          Value: eira-resultados
+
+  ConfigRecorderRole:
+    Type: AWS::IAM::Role
+    Condition: CreateAwsConfig
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWS_ConfigRole
+      Policies:
+        - PolicyName: deliver-to-compliance-bucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${ComplianceLogsBucket.Arn}/config/AWSLogs/${AWS::AccountId}/*
+              - Effect: Allow
+                Action: s3:GetBucketAcl
+                Resource: !GetAtt ComplianceLogsBucket.Arn
+              # La S3 Bucket Key del bucket de cumplimiento requiere Decrypt además de GenerateDataKey.
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !GetAtt OpsKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
+
+  ConfigRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    Condition: CreateAwsConfig
+    Properties:
+      Name: !Sub eira-${Stage}
+      RoleARN: !GetAtt ConfigRecorderRole.Arn
+      RecordingGroup:
+        AllSupported: false
+        IncludeGlobalResourceTypes: false
+        ResourceTypes:
+          - AWS::S3::Bucket
+          - AWS::DynamoDB::Table
+          - AWS::KMS::Key
+          - AWS::IAM::Role
+          - AWS::Lambda::Function
+          - AWS::ApiGateway::RestApi
+          - AWS::ApiGateway::Stage
+          - AWS::WAFv2::WebACL
+          - AWS::CloudTrail::Trail
+          - AWS::SNS::Topic
+      RecordingMode:
+        RecordingFrequency: DAILY
+
+  ConfigDeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    Condition: CreateAwsConfig
+    # AWS Config exige que el grabador exista antes de aceptar el canal de entrega.
+    DependsOn: ConfigRecorder
+    Properties:
+      Name: !Sub eira-${Stage}
+      S3BucketName: !Ref ComplianceLogsBucket
+      S3KeyPrefix: config
+      S3KmsKeyArn: !GetAtt OpsKey.Arn
+      ConfigSnapshotDeliveryProperties:
+        DeliveryFrequency: TwentyFour_Hours
+
+  ConfigRuleS3SslOnly:
+    Type: AWS::Config::ConfigRule
+    Condition: CreateAwsConfig
+    DependsOn: [ConfigRecorder, ConfigDeliveryChannel]
+    Properties:
+      ConfigRuleName: !Sub eira-${Stage}-s3-bucket-ssl-requests-only
+      Source:
+        Owner: AWS
+        SourceIdentifier: S3_BUCKET_SSL_REQUESTS_ONLY
+
+  ConfigRuleS3PublicAccess:
+    Type: AWS::Config::ConfigRule
+    Condition: CreateAwsConfig
+    DependsOn: [ConfigRecorder, ConfigDeliveryChannel]
+    Properties:
+      ConfigRuleName: !Sub eira-${Stage}-s3-bucket-level-public-access-prohibited
+      Source:
+        Owner: AWS
+        SourceIdentifier: S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED
+
+  ConfigRuleDynamoDbPitr:
+    Type: AWS::Config::ConfigRule
+    Condition: CreateAwsConfig
+    DependsOn: [ConfigRecorder, ConfigDeliveryChannel]
+    Properties:
+      ConfigRuleName: !Sub eira-${Stage}-dynamodb-pitr-enabled
+      Source:
+        Owner: AWS
+        SourceIdentifier: DYNAMODB_PITR_ENABLED
+
+  ConfigRuleKmsRotation:
+    Type: AWS::Config::ConfigRule
+    Condition: CreateAwsConfig
+    DependsOn: [ConfigRecorder, ConfigDeliveryChannel]
+    Properties:
+      ConfigRuleName: !Sub eira-${Stage}-cmk-backing-key-rotation-enabled
+      Source:
+        Owner: AWS
+        SourceIdentifier: CMK_BACKING_KEY_ROTATION_ENABLED
+
 Outputs:
   ApiUrl:
     Description: URL base de la API REST
@@ -2335,3 +3448,8 @@ Outputs:
   WebAclArn:
     Condition: CreateWaf
     Value: !GetAtt ApiWebAcl.Arn
+  OpsAlarmsTopicArn:
+    Description: Tema SNS de alarmas operativas (sin suscripciones en la plantilla)
+    Value: !Ref OpsAlarmsTopic
+  OpsDashboardName:
+    Value: !Ref OpsDashboard

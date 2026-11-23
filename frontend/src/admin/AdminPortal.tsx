@@ -18,7 +18,14 @@ const STATUS_LABEL: Record<AdminResultView['status'], string> = {
 };
 const field = (form: FormData, key: string) => String(form.get(key) ?? '').trim();
 
-export function AdminPortal() {
+type AdminPortalProps = {
+  /** Access token de Cognito; en local no hay token y el servidor usa la identidad sintética. */
+  token?: string | undefined;
+  /** El backend respondió 401: el token venció o fue revocado. */
+  onUnauthorized?: () => void;
+};
+
+export function AdminPortal({ token, onUnauthorized }: AdminPortalProps = {}) {
   const [patient, setPatient] = useState<AdminPatientView>();
   const [results, setResults] = useState<AdminResultView[]>([]);
   const [audit, setAudit] = useState<AuditEventView[]>();
@@ -38,6 +45,12 @@ export function AdminPortal() {
     return () => clearTimeout(id);
   }, [reviewLink]);
 
+  const adminApi = <T,>(
+    method: 'GET' | 'POST',
+    path: string,
+    options: { body?: unknown } = {},
+  ): Promise<T> => api<T>(method, path, { ...options, token });
+
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError(undefined);
@@ -45,14 +58,15 @@ export function AdminPortal() {
     try {
       await action();
     } catch (e) {
-      setError(errorMessage(e));
+      if (e instanceof ApiError && e.status === 401 && onUnauthorized) onUnauthorized();
+      else setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
   }
 
   async function open(p: AdminPatientView) {
-    const list = await api<{ results: AdminResultView[] }>(
+    const list = await adminApi<{ results: AdminResultView[] }>(
       'GET',
       `/v1/admin/patients/${encodeURIComponent(p.patientId)}/results`,
     );
@@ -69,7 +83,10 @@ export function AdminPortal() {
     const folio = field(new FormData(e.currentTarget), 'folio');
     void run(async () =>
       open(
-        await api<AdminPatientView>('GET', `/v1/admin/patients?folio=${encodeURIComponent(folio)}`),
+        await adminApi<AdminPatientView>(
+          'GET',
+          `/v1/admin/patients?folio=${encodeURIComponent(folio)}`,
+        ),
       ),
     );
   };
@@ -79,7 +96,7 @@ export function AdminPortal() {
     const form = new FormData(e.currentTarget);
     const target = e.currentTarget;
     void run(async () => {
-      const created = await api<AdminPatientView>('POST', '/v1/admin/patients', {
+      const created = await adminApi<AdminPatientView>('POST', '/v1/admin/patients', {
         body: {
           fullName: field(form, 'fullName'),
           birthDate: field(form, 'birthDate'),
@@ -98,7 +115,7 @@ export function AdminPortal() {
     if (!patient) return;
     const sampleDate = field(new FormData(e.currentTarget), 'sampleDate');
     void run(async () => {
-      await api('POST', '/v1/admin/results', {
+      await adminApi('POST', '/v1/admin/results', {
         body: { patientId: patient.patientId, resultType: 'PAPANICOLAOU', sampleDate },
       });
       await reload();
@@ -113,7 +130,7 @@ export function AdminPortal() {
         throw new ApiError(0, 'El PDF supera 10 MB');
       const bytes = await file.arrayBuffer();
       const spec = { sha256: await sha256Base64(bytes), sizeBytes: bytes.byteLength };
-      const target = await api<UploadUrlResponse>(
+      const target = await adminApi<UploadUrlResponse>(
         'POST',
         `/v1/admin/results/${encodeURIComponent(resultId)}/upload-url`,
         { body: { contentType: 'application/pdf', ...spec } },
@@ -127,7 +144,7 @@ export function AdminPortal() {
       // Si el PUT falla porque el mismo archivo ya se cargó en un intento anterior, submit lo
       // verifica igualmente por tamaño y SHA-256; solo si submit falla se informa el rechazo.
       try {
-        await api('POST', `/v1/admin/results/${encodeURIComponent(resultId)}/submit`, {
+        await adminApi('POST', `/v1/admin/results/${encodeURIComponent(resultId)}/submit`, {
           body: spec,
         });
       } catch (e) {
@@ -140,7 +157,7 @@ export function AdminPortal() {
 
   const onViewPdf = (resultId: string) =>
     void run(async () => {
-      const { url, expiresIn } = await api<ReviewUrlResponse>(
+      const { url, expiresIn } = await adminApi<ReviewUrlResponse>(
         'POST',
         `/v1/admin/results/${encodeURIComponent(resultId)}/review-url`,
       );
@@ -153,7 +170,7 @@ export function AdminPortal() {
     const form = new FormData(e.currentTarget);
     const note = field(form, 'note');
     void run(async () => {
-      await api('POST', `/v1/admin/results/${encodeURIComponent(resultId)}/review`, {
+      await adminApi('POST', `/v1/admin/results/${encodeURIComponent(resultId)}/review`, {
         body: {
           decision: submitter?.value === 'APPROVE' ? 'APPROVE' : 'REQUEST_CORRECTION',
           checks: {
@@ -174,7 +191,7 @@ export function AdminPortal() {
       const to = new Date(Date.now() + 60_000).toISOString();
       const from = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
       const params = new URLSearchParams({ patientId: patient.patientId, from, to });
-      const res = await api<{ items: AuditEventView[]; cursor?: string }>(
+      const res = await adminApi<{ items: AuditEventView[]; cursor?: string }>(
         'GET',
         `/v1/admin/audit?${params}`,
       );
@@ -189,7 +206,7 @@ export function AdminPortal() {
     void run(async () => {
       const page = new URLSearchParams(params);
       page.set('cursor', cursor);
-      const res = await api<{ items: AuditEventView[]; cursor?: string }>(
+      const res = await adminApi<{ items: AuditEventView[]; cursor?: string }>(
         'GET',
         `/v1/admin/audit?${page}`,
       );
@@ -201,10 +218,6 @@ export function AdminPortal() {
   return (
     <section className={styles.panel} aria-labelledby="admin-title">
       <h2 id="admin-title">Administración</h2>
-      <p className={styles.demo} role="note">
-        Identidad administrativa sintética: solo en el servidor local (127.0.0.1). En AWS el acceso
-        es con Cognito.
-      </p>
       <p className={styles.muted}>
         La revisión solo comprueba correspondencia, integridad y legibilidad. EIRA no interpreta ni
         valida clínicamente los resultados.

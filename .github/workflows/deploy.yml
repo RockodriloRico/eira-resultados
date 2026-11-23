@@ -1,0 +1,225 @@
+name: Despliegue (deshabilitado)
+
+# Definido sin capacidad efectiva de desplegar (ADR-0013):
+# - Solo se ejecuta a mano (workflow_dispatch); nunca en push ni pull_request.
+# - El job `guard` falla mientras no exista la variable del repositorio EIRA_DEPLOY_ENABLED=true;
+#   plan y apply fallan sin AWS_DEPLOY_ROLE_ARN y SAM_ARTIFACTS_BUCKET. AWS_DEPLOY_ROLE_ARN se define
+#   en cada environment: eira-<stage>-plan en <stage> y eira-<stage>-apply en <stage>-apply. Los roles
+#   IAM de OIDC no existen: se crean solo con una autorización independiente (docs/deploy-pipeline.md).
+# - Sin credenciales permanentes: AWS solo se alcanza con OIDC (id-token) en los jobs de los
+#   environments `<stage>` (plan) y `<stage>-apply` (ejecución), ambos con aprobación manual.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Entorno
+        type: choice
+        options: [demo, dev, prod]
+        default: demo
+      confirm:
+        description: Escribe el nombre del entorno para confirmar
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.stage }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  SAM_CLI_TELEMETRY: '0'
+
+jobs:
+  guard:
+    name: Autorización de despliegue
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Comprobar autorización, confirmación y prerrequisitos
+        env:
+          STAGE: ${{ inputs.stage }}
+          CONFIRM: ${{ inputs.confirm }}
+          ENABLED: ${{ vars.EIRA_DEPLOY_ENABLED }}
+          PROD_SMS_READY: ${{ vars.EIRA_PROD_SMS_READY }}
+          REF: ${{ github.ref }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$ENABLED" = "true" ] || fail "Despliegue no autorizado: EIRA_DEPLOY_ENABLED no es 'true'."
+          [ "$CONFIRM" = "$STAGE" ] || fail "La confirmación no coincide con el entorno."
+          [ "$REF" = "refs/heads/main" ] || fail "Solo se despliega desde main."
+          if [ "$STAGE" = "prod" ]; then
+            [ "$PROD_SMS_READY" = "true" ] || fail "prod requiere proveedor SMS real (etapa posterior)."
+          fi
+
+  build:
+    name: Validar y construir (sin credenciales)
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Instalar SAM CLI
+        run: |
+          python -m venv "$RUNNER_TEMP/sam" && "$RUNNER_TEMP/sam/bin/pip" install -q -r infrastructure/requirements-sam.txt
+          echo "$RUNNER_TEMP/sam/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: npm run check
+      - run: npm run infra:validate
+      - run: npm run build:sam -w @eira/infrastructure
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build
+          path: |
+            .aws-sam/build
+            frontend/dist
+          retention-days: 7
+
+  plan:
+    name: Change set (${{ inputs.stage }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.stage }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      changeset: ${{ steps.changeset.outputs.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Instalar SAM CLI
+        run: |
+          python -m venv "$RUNNER_TEMP/sam" && "$RUNNER_TEMP/sam/bin/pip" install -q -r infrastructure/requirements-sam.txt
+          echo "$RUNNER_TEMP/sam/bin" >> "$GITHUB_PATH"
+      - name: Comprobar variables del environment (rol OIDC de plan y bucket)
+        env:
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
+          STAGE: ${{ inputs.stage }}
+        run: |
+          [ -n "$ROLE" ] || { echo "::error::Falta AWS_DEPLOY_ROLE_ARN (el rol OIDC no se ha creado)."; exit 1; }
+          [ -n "$BUCKET" ] || { echo "::error::Falta SAM_ARTIFACTS_BUCKET."; exit 1; }
+          # Cada environment define su propio rol: plan no puede usar el rol de la otra fase.
+          case "$ROLE" in
+            *":role/eira-$STAGE-plan") ;;
+            *) echo "::error::AWS_DEPLOY_ROLE_ARN debe ser el rol eira-$STAGE-plan de este environment."; exit 1 ;;
+          esac
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: eira-${{ inputs.stage }}-plan-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Crear change set sin ejecutarlo
+        id: changeset
+        working-directory: infrastructure
+        env:
+          STAGE: ${{ inputs.stage }}
+          STACK: eira-resultados-${{ inputs.stage }}
+          BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
+          CFN_ROLE: ${{ vars.AWS_CFN_EXECUTION_ROLE_ARN }}
+        run: |
+          # CloudFormation crea los recursos con su rol de ejecución, no con el rol de GitHub.
+          [ -n "$CFN_ROLE" ] || { echo "::error::Falta AWS_CFN_EXECUTION_ROLE_ARN."; exit 1; }
+          # Elimina change sets pendientes de ejecuciones anteriores: apply solo ejecuta el de esta.
+          for old in $(aws cloudformation list-change-sets --stack-name "$STACK" \
+            --query "Summaries[].ChangeSetId" --output text 2>/dev/null || true); do
+            aws cloudformation delete-change-set --change-set-name "$old"
+          done
+          # SAM busca samconfig.toml junto a la plantilla construida; se indica explícitamente.
+          sam deploy --config-file "$GITHUB_WORKSPACE/infrastructure/samconfig.toml" --config-env "$STAGE" \
+            --template-file ../.aws-sam/build/template.yaml \
+            --s3-bucket "$BUCKET" --s3-prefix "eira-$STAGE" --role-arn "$CFN_ROLE" \
+            --no-execute-changeset --no-confirm-changeset --no-fail-on-empty-changeset
+          CS=$(aws cloudformation list-change-sets --stack-name "$STACK" \
+            --query "Summaries[?Status=='CREATE_COMPLETE'].ChangeSetId | [0]" --output text)
+          echo "id=$CS" >> "$GITHUB_OUTPUT"
+
+  apply:
+    name: Ejecutar change set y publicar frontend (${{ inputs.stage }})
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.stage }}-apply
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build
+      - name: Comprobar variables del environment (rol OIDC de apply y bucket)
+        env:
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
+          STAGE: ${{ inputs.stage }}
+        run: |
+          [ -n "$ROLE" ] || { echo "::error::Falta AWS_DEPLOY_ROLE_ARN (el rol OIDC no se ha creado)."; exit 1; }
+          [ -n "$BUCKET" ] || { echo "::error::Falta SAM_ARTIFACTS_BUCKET."; exit 1; }
+          # Cada environment define su propio rol: apply no puede usar el rol de la otra fase.
+          case "$ROLE" in
+            *":role/eira-$STAGE-apply") ;;
+            *) echo "::error::AWS_DEPLOY_ROLE_ARN debe ser el rol eira-$STAGE-apply de este environment."; exit 1 ;;
+          esac
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: eira-${{ inputs.stage }}-apply-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Ejecutar el change set creado y aprobado en este run
+        env:
+          STACK: eira-resultados-${{ inputs.stage }}
+          CS: ${{ needs.plan.outputs.changeset }}
+        run: |
+          if [ -n "$CS" ] && [ "$CS" != "None" ]; then
+            TYPE=$(aws cloudformation describe-change-set --change-set-name "$CS" \
+              --query ChangeSetType --output text)
+            aws cloudformation execute-change-set --change-set-name "$CS"
+            if [ "$TYPE" = "CREATE" ]; then
+              aws cloudformation wait stack-create-complete --stack-name "$STACK"
+            else
+              aws cloudformation wait stack-update-complete --stack-name "$STACK"
+            fi
+          else
+            echo "Sin cambios de infraestructura en este run."
+          fi
+      - name: Generar config.json y publicar el frontend
+        env:
+          STAGE: ${{ inputs.stage }}
+          STACK: eira-resultados-${{ inputs.stage }}
+        run: |
+          aws cloudformation describe-stacks --stack-name "$STACK" > "$RUNNER_TEMP/outputs.json"
+          npm run frontend:config -- --stage "$STAGE" --outputs "$RUNNER_TEMP/outputs.json" --out frontend/dist/config.json
+          out() { jq -r --arg k "$1" '.Stacks[0].Outputs[] | select(.OutputKey==$k) | .OutputValue' "$RUNNER_TEMP/outputs.json"; }
+          aws s3 sync frontend/dist "s3://$(out FrontendBucketName)" --delete \
+            --exclude config.json --cache-control "public,max-age=300"
+          aws s3 cp frontend/dist/config.json "s3://$(out FrontendBucketName)/config.json" \
+            --cache-control "no-store" --content-type application/json
+          aws cloudfront create-invalidation --distribution-id "$(out FrontendDistributionId)" --paths "/*"

@@ -540,6 +540,7 @@ export class AccessService {
     } catch (error) {
       if (!isConditionFailure(error)) throw error;
       const locked = challenge.status === 'LOCKED' || challenge.attempts >= P.pinMaxAttempts;
+      logger.metric('PinVerifyFailed');
       await this.d.audit.tryAppend({ ...auditBase, reasonCode: locked ? 'LOCKED' : 'EXPIRED' });
       throw new HttpError(
         locked ? 423 : 401,
@@ -565,9 +566,12 @@ export class AccessService {
         .catch((error: unknown) => {
           if (!isConditionFailure(error)) throw error;
         });
+      logger.metric('PinVerifyFailed');
+      logger.metric('PinChallengeLocked');
       await this.d.audit.tryAppend({ ...auditBase, reasonCode: 'LOCKED' });
       throw new HttpError(423, 'Demasiados intentos. Solicita un código nuevo.');
     }
+    logger.metric('PinVerifyFailed');
     await this.d.audit.tryAppend({ ...auditBase, reasonCode: 'MISMATCH' });
     throw new HttpError(401, GENERIC.invalidCode);
   }

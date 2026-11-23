@@ -1,4 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { logger } from '../observability/logger.ts';
 import type { z } from 'zod';
 
 export type HttpResult = APIGatewayProxyResult;
@@ -66,11 +67,63 @@ export function sessionContext(event: APIGatewayProxyEvent): {
   return { patientId, tokenHash };
 }
 
-/** Identidad del administrador (claims de Cognito). */
-export function adminContext(event: APIGatewayProxyEvent): { adminId: string } {
+export const ADMIN_GROUP = 'admins';
+
+/**
+ * El claim `cognito:groups` debe contener exactamente el grupo `admins`. API Gateway REST lo entrega
+ * como texto (`admins` o `[admins]`); no se separa por comas ni espacios porque un nombre de grupo
+ * de Cognito puede contenerlos (`otros,admins` no es `admins`). Pertenecer a otros grupos además de
+ * `admins` se rechaza (falla cerrada): la plantilla solo define `admins`.
+ */
+export function isAdminGroupClaim(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length === 1 && value[0] === ADMIN_GROUP;
+  return value === ADMIN_GROUP || value === `[${ADMIN_GROUP}]`;
+}
+
+export type AdminTokenExpectations = { clientId: string; issuer: string };
+
+/** Cliente y emisor del servidor local; nunca se aceptan dentro de Lambda. */
+export const LOCAL_ADMIN_TOKEN: AdminTokenExpectations = {
+  clientId: 'local-admin-spa',
+  issuer: 'http://127.0.0.1/local-admin-issuer',
+};
+
+/**
+ * Cliente y emisor esperados del access token. En Lambda salen de `ADMIN_CLIENT_ID` y
+ * `ADMIN_TOKEN_ISSUER` (plantilla); si faltan, no hay valores válidos y toda petición recibe 401.
+ */
+export function adminTokenExpectations(
+  env: NodeJS.ProcessEnv = process.env,
+): AdminTokenExpectations | undefined {
+  if (env.ADMIN_CLIENT_ID && env.ADMIN_TOKEN_ISSUER)
+    return { clientId: env.ADMIN_CLIENT_ID, issuer: env.ADMIN_TOKEN_ISSUER };
+  return env.AWS_LAMBDA_FUNCTION_NAME ? undefined : LOCAL_ADMIN_TOKEN;
+}
+
+/**
+ * Identidad del administrador (ADR-0006). El Cognito authorizer de API Gateway ya verificó la firma
+ * (JWKS del User Pool), el emisor del pool y la expiración, y con `AuthorizationScopes` solo acepta
+ * access tokens. Aquí se exige además, en defensa en profundidad: `token_use=access`, el emisor y el
+ * `client_id` del cliente administrativo (el authorizer no comprueba el cliente) y el grupo `admins`.
+ */
+export function adminContext(
+  event: APIGatewayProxyEvent,
+  expected: AdminTokenExpectations | undefined = adminTokenExpectations(),
+): { adminId: string } {
   const claims = (event.requestContext?.authorizer as Record<string, unknown> | null | undefined)
     ?.claims as Record<string, unknown> | undefined;
   const sub = claims?.sub;
   if (typeof sub !== 'string' || !sub) throw new HttpError(401, 'No autorizado');
+  if (
+    !expected ||
+    claims?.token_use !== 'access' ||
+    claims?.client_id !== expected.clientId ||
+    claims?.iss !== expected.issuer
+  )
+    throw new HttpError(401, 'No autorizado');
+  if (!isAdminGroupClaim(claims?.['cognito:groups'])) {
+    logger.metric('AdminForbidden');
+    throw new HttpError(403, 'Acceso restringido al personal autorizado');
+  }
   return { adminId: sub };
 }
