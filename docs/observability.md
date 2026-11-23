@@ -30,15 +30,15 @@ Los umbrales son iniciales y se ajustan con tráfico real en `demo`.
 
 Precios públicos de AWS a la fecha de la plantilla, sin el nivel gratuito. Deben confirmarse con AWS Pricing Calculator antes de cada despliegue.
 
-| Concepto                                                               | dev      | demo     | prod (todo activado)  |
-| ---------------------------------------------------------------------- | -------- | -------- | --------------------- |
-| Alarmas estándar (~29 métricas × 0.10)                                 | 2.90     | 2.90     | 2.90                  |
-| Dashboard (3 gratis por cuenta; después 3.00)                          | 0–3      | 0–3      | 0–3                   |
-| `OpsKey` (CMK)                                                         | 1.00     | 1.00     | 1.00                  |
-| SNS (correo, < 1000 notificaciones)                                    | ~0       | ~0       | ~0                    |
-| Métricas EMF (8 métricas personalizadas × 0.30)                        | 2.40     | 2.40     | 2.40                  |
-| Logs de WAF (solo BLOCK y COUNT; 0.50/GB de ingesta)                   | —        | —        | < 1                   |
-| Logs de acceso de S3 (almacenamiento)                                  | —        | —        | < 1                   |
-| CloudTrail, eventos de datos (0.10 por 100 000)                        | —        | —        | 1–5 con 1–5 M eventos |
-| AWS Config (0.003 por elemento diario y 0.001 por evaluación de regla) | —        | —        | 1–3                   |
-| **Total de observabilidad**                                            | **~6–9** | **~6–9** | **~10–20**            |
+| Concepto                                                                                                        | dev      | demo     | prod (todo activado)  |
+| --------------------------------------------------------------------------------------------------------------- | -------- | -------- | --------------------- |
+| Alarmas estándar (~29 métricas × 0.10)                                                                          | 2.90     | 2.90     | 2.90                  |
+| Dashboard (3 gratis por cuenta; después 3.00)                                                                   | 0–3      | 0–3      | 0–3                   |
+| `OpsKey` (CMK)                                                                                                  | 1.00     | 1.00     | 1.00                  |
+| SNS (correo, < 1000 notificaciones)                                                                             | ~0       | ~0       | ~0                    |
+| Métricas EMF (8 métricas personalizadas × 0.30)                                                                 | 2.40     | 2.40     | 2.40                  |
+| Logs de WAF (solo BLOCK y COUNT; 0.50/GB de ingesta)                                                            | —        | —        | < 1                   |
+| Logs de acceso de S3 (almacenamiento)                                                                           | —        | —        | < 1                   |
+| CloudTrail, eventos de datos (0.10 por 100 000)                                                                 | —        | —        | 1–5 con 1–5 M eventos |
+| AWS Config (grabación diaria: 0.012 por elemento registrado, solo cuando cambió; 0.001 por evaluación de regla) | —        | —        | 1–3                   |
+| **Total de observabilidad**                                                                                     | **~6–9** | **~6–9** | **~10–20**            |
