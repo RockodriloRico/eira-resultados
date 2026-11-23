@@ -841,5 +841,11 @@ describe('Registro de cumplimiento: solo prod y con parámetros (ADR-0012)', () 
     expect(p.RecordingGroup.AllSupported).toBe(false);
     expect(p.RecordingGroup.ResourceTypes.length).toBeLessThanOrEqual(10);
     expect(p.RecordingMode.RecordingFrequency).toBe('DAILY');
+    expect(R.ConfigDeliveryChannel!.DependsOn).toBe('ConfigRecorder');
+    const kms = statementsOf(R.ConfigRecorderRole!).find((s) =>
+      asArray<string>(s.Action).includes('kms:GenerateDataKey'),
+    );
+    expect(asArray<string>(kms!.Action).sort()).toEqual(['kms:Decrypt', 'kms:GenerateDataKey']);
+    expect(kms!.Condition.StringEquals['kms:ViaService']).toBeDefined();
   });
 });

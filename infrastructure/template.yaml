@@ -3322,9 +3322,15 @@ Resources:
               - Effect: Allow
                 Action: s3:GetBucketAcl
                 Resource: !GetAtt ComplianceLogsBucket.Arn
+              # La S3 Bucket Key del bucket de cumplimiento requiere Decrypt además de GenerateDataKey.
               - Effect: Allow
-                Action: kms:GenerateDataKey
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
                 Resource: !GetAtt OpsKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
 
   ConfigRecorder:
     Type: AWS::Config::ConfigurationRecorder
