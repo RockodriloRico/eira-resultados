@@ -10,6 +10,7 @@
   2. **`build`:** sin credenciales. Ejecuta `npm run check`, `sam validate --lint` y `sam build`.
   3. **`plan`:** environment `<stage>` con aprobación manual. Usa OIDC y `sam deploy --no-execute-changeset`, así que solo crea el _change set_.
   4. **`apply`:** environment `<stage>-apply`, con una segunda aprobación manual. Ejecuta el change set, genera `config.json` desde los outputs y publica el frontend.
+- **Un rol por fase:** `eira-<stage>-plan` (crea change sets y pasa el rol de ejecución) y `eira-<stage>-apply` (solo ejecuta el change set y publica el frontend). Cada uno confía solo en su environment y en `main`, con el claim `sub` personalizado para incluir `ref`. La segunda aprobación queda impuesta por IAM, no solo por el contenido del workflow.
 - **Sin credenciales permanentes:** AWS solo se alcanza con `aws-actions/configure-aws-credentials` y el rol de OIDC. Ningún workflow usa `secrets.*` de AWS.
 - **Acciones fijadas a SHA** en todos los workflows.
 - **CI sin capacidad de despliegue:** CI no tiene `id-token` ni pasos de despliegue.

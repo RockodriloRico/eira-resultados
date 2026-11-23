@@ -46,6 +46,8 @@ describe('workflow de despliegue sin capacidad efectiva (ADR-0013)', () => {
       const creds = steps.findIndex((s) => s.uses?.includes('configure-aws-credentials'));
       expect(check, id).toBeGreaterThanOrEqual(0);
       expect(check, id).toBeLessThan(creds);
+      // plan y apply usan roles distintos (uno por environment), comprobados por nombre.
+      expect(steps[check]!.run, id).toContain(`*":role/eira-$STAGE-${id}")`);
     }
   });
 
