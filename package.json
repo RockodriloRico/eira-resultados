@@ -30,7 +30,10 @@
     "test:integration": "npm run test:integration -w @eira/infrastructure && npm run test:integration -w @eira/backend",
     "frontend:config": "node scripts/frontend-config.ts",
     "demo:api": "node backend/src/local/start.ts",
-    "demo": "npm run dynamodb:up && node scripts/demo.ts"
+    "demo": "npm run dynamodb:up && node scripts/demo.ts",
+    "smoke": "node backend/scripts/smoke.ts",
+    "seed:demo": "node backend/scripts/seed-demo.ts",
+    "timing:study": "node backend/scripts/timing-study.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
