@@ -56,11 +56,13 @@ export async function seedSyntheticViaApi(options: SeedOptions): Promise<{ creat
   for (const result of SYNTHETIC_RESULTS) {
     const patient = await call('GET', `/v1/admin/patients?folio=${result.folio}`);
     const existing = await call('GET', `/v1/admin/patients/${patient.body.patientId!}/results`);
-    const expected = result.approved ? 'APPROVED' : 'PENDING_REVIEW';
     const previous = existing.body.results?.find((r) => r.sampleDate === result.sampleDate);
     if (previous) {
-      // Un resultado a medias de una ejecución anterior no se reporta como sembrado.
-      if (previous.status !== expected)
+      // Un resultado a medias de una ejecución anterior no se reporta como sembrado. Si el seed lo
+      // dejó en revisión, el personal pudo aprobarlo o pedir corrección después: eso es válido.
+      const incomplete =
+        previous.status === 'CREATED' || (result.approved && previous.status !== 'APPROVED');
+      if (incomplete)
         throw new Error(
           `${result.folio} ${result.sampleDate}: quedó en ${previous.status}; complétalo en el portal`,
         );

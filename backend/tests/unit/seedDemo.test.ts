@@ -43,4 +43,20 @@ describe('seedSyntheticViaApi', () => {
       }),
     ).rejects.toThrow('quedó en DRAFT');
   });
+
+  it('acepta que el personal haya decidido un resultado que el seed dejó en revisión', async () => {
+    const existing = [
+      { sampleDate: '2026-10-01', status: 'APPROVED' },
+      { sampleDate: '2026-11-03', status: 'APPROVED' },
+      { sampleDate: '2026-10-20', status: 'APPROVED' },
+    ];
+    await expect(
+      seedSyntheticViaApi({
+        apiUrl: API,
+        stage: 'demo',
+        accessToken: 't',
+        fetchFn: fakeApi({ existing }),
+      }),
+    ).resolves.toBeDefined();
+  });
 });
