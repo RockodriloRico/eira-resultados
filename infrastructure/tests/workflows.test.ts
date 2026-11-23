@@ -51,6 +51,7 @@ describe('workflow de despliegue sin capacidad efectiva (ADR-0013)', () => {
 
   it('el plan no ejecuta el change set', () => {
     expect(JSON.stringify(deploy.jobs.plan)).toContain('--no-execute-changeset');
+    expect(JSON.stringify(deploy.jobs.plan)).toContain('--role-arn \\"$CFN_ROLE\\"');
   });
 
   it('sin credenciales permanentes ni secretos de AWS', () => {

@@ -126,11 +126,14 @@ jobs:
         env:
           STAGE: ${{ inputs.stage }}
           BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
+          CFN_ROLE: ${{ vars.AWS_CFN_EXECUTION_ROLE_ARN }}
         run: |
+          # CloudFormation crea los recursos con su rol de ejecución, no con el rol de GitHub.
+          [ -n "$CFN_ROLE" ] || { echo "::error::Falta AWS_CFN_EXECUTION_ROLE_ARN."; exit 1; }
           # SAM busca samconfig.toml junto a la plantilla construida; se indica explícitamente.
           sam deploy --config-file "$GITHUB_WORKSPACE/infrastructure/samconfig.toml" --config-env "$STAGE" \
             --template-file ../.aws-sam/build/template.yaml \
-            --s3-bucket "$BUCKET" --s3-prefix "eira-$STAGE" \
+            --s3-bucket "$BUCKET" --s3-prefix "eira-$STAGE" --role-arn "$CFN_ROLE" \
             --no-execute-changeset --no-confirm-changeset --no-fail-on-empty-changeset
 
   apply:

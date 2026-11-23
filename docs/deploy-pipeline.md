@@ -31,8 +31,8 @@ Decisión en [ADR-0013](adr/0013-pipeline-github-oidc.md). **Nada de esto está 
   - `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `ListChangeSets`, `ExecuteChangeSet`, `DescribeStacks`, `DescribeStackEvents` y `GetTemplateSummary` sobre el stack. Además, `CreateChangeSet` sobre la transformación `AWS::Serverless-2016-10-31`.
   - `s3:PutObject` y `s3:GetObject` en `SAM_ARTIFACTS_BUCKET/eira-<stage>/*`.
   - `s3:PutObject`, `s3:DeleteObject` y `s3:ListBucket` en el bucket del frontend, y `cloudfront:CreateInvalidation` en su distribución.
-  - `iam:PassRole` solo para `arn:aws:iam::<cuenta>:role/eira-<stage>-*`.
-  - Opción recomendada: un **rol de ejecución de CloudFormation** (`--role-arn`) con los permisos de creación de recursos, para que el rol de GitHub solo pueda gestionar change sets.
+  - `iam:PassRole` solo para `eira-<stage>-cfn-exec`, con `iam:PassedToService = cloudformation.amazonaws.com`.
+  - **Rol de ejecución de CloudFormation** `eira-<stage>-cfn-exec` (obligatorio, variable `AWS_CFN_EXECUTION_ROLE_ARN`). Confía solo en `cloudformation.amazonaws.com` y tiene los permisos de creación de recursos; el rol de GitHub solo gestiona change sets y le pasa este rol con `iam:PassRole`.
 - La plantilla usa `CAPABILITY_NAMED_IAM`. Los permisos IAM de creación quedan en el rol de ejecución, limitados a `eira-<stage>-*`.
 
 ## 2. Configuración de GitHub (Settings)
@@ -41,7 +41,7 @@ Decisión en [ADR-0013](adr/0013-pipeline-github-oidc.md). **Nada de esto está 
   - _Required reviewers_: el responsable del proyecto.
   - _Prevent self-review_.
   - _Deployment branches_: solo `main`.
-- **Variables del repositorio:** `AWS_DEPLOY_ROLE_ARN`, `SAM_ARTIFACTS_BUCKET` y, al final, `EIRA_DEPLOY_ENABLED=true`. Para un rol por entorno, usar variables de environment.
+- **Variables:** `AWS_DEPLOY_ROLE_ARN`, `AWS_CFN_EXECUTION_ROLE_ARN` y `SAM_ARTIFACTS_BUCKET`, en el repositorio o en los environments `<stage>` y `<stage>-apply`. Al final, `EIRA_DEPLOY_ENABLED=true` en el repositorio.
 - `EIRA_PROD_SMS_READY` no se define hasta que exista un proveedor SMS real.
 
 ## 3. Procedimiento de despliegue propuesto (demo)
