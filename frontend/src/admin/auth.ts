@@ -36,6 +36,22 @@ export function adminUserManager(config: CognitoAdminConfig): UserManager {
   });
 }
 
+const managers = new Map<string, UserManager>();
+
+/**
+ * Un `UserManager` por configuración durante la vida de la página: la sesión (en memoria) se
+ * conserva al cambiar entre secciones aunque el portal administrativo se desmonte.
+ */
+export function sharedAdminUserManager(config: CognitoAdminConfig): UserManager {
+  const key = `${config.authority}|${config.clientId}`;
+  let manager = managers.get(key);
+  if (!manager) {
+    manager = adminUserManager(config);
+    managers.set(key, manager);
+  }
+  return manager;
+}
+
 /**
  * Cierre de sesión: revoca el refresh token, descarta los tokens en memoria y borra la sesión del
  * Hosted UI con el endpoint `/logout` de Cognito (`client_id` + `logout_uri`).

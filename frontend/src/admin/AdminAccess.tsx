@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { runtimeConfig } from '../config/runtime.ts';
 import styles from '../ui.module.css';
 import { AdminPortal } from './AdminPortal.tsx';
-import { adminSignOut, adminUserManager } from './auth.ts';
+import { adminSignOut, adminUserManager, sharedAdminUserManager } from './auth.ts';
 
 /** Elige la autenticación administrativa según config.json: Cognito en AWS, sintética en local. */
 export function AdminAccess({ manager }: { manager?: UserManager | undefined } = {}) {
@@ -29,11 +29,15 @@ function CognitoAdmin({
   config: CognitoAdminConfig;
   manager?: UserManager | undefined;
 }) {
-  const users = useMemo(() => manager ?? adminUserManager(config), [manager, config]);
+  const users = useMemo(() => manager ?? sharedAdminUserManager(config), [manager, config]);
   const [user, setUser] = useState<User>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    let active = true;
+    void users.getUser().then((u) => {
+      if (active && u && !u.expired) setUser(u);
+    });
     const loaded = (u: User) => setUser(u);
     const ended = () => setUser(undefined);
     users.events.addUserLoaded(loaded);
@@ -41,6 +45,7 @@ function CognitoAdmin({
     users.events.addAccessTokenExpired(ended);
     users.events.addSilentRenewError(ended);
     return () => {
+      active = false;
       users.events.removeUserLoaded(loaded);
       users.events.removeUserUnloaded(ended);
       users.events.removeAccessTokenExpired(ended);

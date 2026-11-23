@@ -124,6 +124,18 @@ describe('acceso administrativo con Cognito', () => {
     expect(localStorage.length + sessionStorage.length).toBe(0);
   });
 
+  it('conserva la sesión al cambiar de sección y volver (el portal se desmonta)', async () => {
+    stubNetwork();
+    const first = render(<AdminAccess />);
+    fireEvent.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
+    await completePopup();
+    await screen.findByRole('form', { name: 'Buscar expediente' });
+    first.unmount();
+    render(<AdminAccess />);
+    expect(await screen.findByRole('form', { name: 'Buscar expediente' })).toBeInTheDocument();
+    expect(localStorage.length + sessionStorage.length).toBe(0);
+  });
+
   it('si la ventana emergente falla, lo informa y permite reintentar', async () => {
     stubNetwork();
     vi.spyOn(window, 'open').mockReturnValue(null);
