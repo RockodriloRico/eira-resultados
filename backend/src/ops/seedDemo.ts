@@ -27,6 +27,7 @@ export async function seedSyntheticViaApi(options: SeedOptions): Promise<{ creat
   if (options.stage === 'prod') throw new Error('El seed sintético no se ejecuta en prod');
   if (options.stage !== 'local' && !options.accessToken)
     throw new Error('Se requiere el access token de Cognito del personal administrativo');
+  assertApiMatchesStage(options.apiUrl, options.stage);
   for (const p of SYNTHETIC_PATIENTS)
     if (!p.folio.startsWith('SINT-')) throw new Error('Solo se admiten folios sintéticos');
   const doFetch = options.fetchFn ?? fetch;
@@ -91,4 +92,16 @@ export async function seedSyntheticViaApi(options: SeedOptions): Promise<{ creat
     log(`${result.folio} ${result.sampleDate}: ${result.approved ? 'aprobado' : 'en revisión'}`);
   }
   return { created };
+}
+
+/** La URL de la API debe corresponder al entorno declarado: evita sembrar en prod por error. */
+function assertApiMatchesStage(apiUrl: string, stage: SeedOptions['stage']) {
+  const url = new URL(apiUrl);
+  if (stage === 'local') {
+    if (!['127.0.0.1', 'localhost'].includes(url.hostname))
+      throw new Error('En local la API debe estar en 127.0.0.1 o localhost');
+    return;
+  }
+  if (url.protocol !== 'https:' || url.pathname.replace(/\/$/, '').split('/').at(-1) !== stage)
+    throw new Error(`La URL de la API no corresponde al entorno ${stage}`);
 }

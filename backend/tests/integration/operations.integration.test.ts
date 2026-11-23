@@ -112,6 +112,13 @@ describe('smoke tests y seed sintético contra el servidor local', () => {
     expect(again.created).toBe(0);
     await expect(seedSyntheticViaApi({ apiUrl: url, stage: 'prod' })).rejects.toThrow('prod');
     await expect(seedSyntheticViaApi({ apiUrl: url, stage: 'demo' })).rejects.toThrow('token');
+    const prodApi = 'https://abc123.execute-api.us-east-1.amazonaws.com/prod';
+    await expect(
+      seedSyntheticViaApi({ apiUrl: prodApi, stage: 'demo', accessToken: 't' }),
+    ).rejects.toThrow('no corresponde al entorno demo');
+    await expect(
+      seedSyntheticViaApi({ apiUrl: 'https://eira.example/prod', stage: 'local' }),
+    ).rejects.toThrow('127.0.0.1');
   });
 
   it('los smoke tests de la API pasan con el piso real', async () => {
