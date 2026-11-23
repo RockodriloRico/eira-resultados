@@ -28,7 +28,7 @@ Decisión en [ADR-0013](adr/0013-pipeline-github-oidc.md). **Nada de esto está 
 ```
 
 - **Permisos del rol** (borrador, limitado al stack `eira-resultados-<stage>`):
-  - `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `ListChangeSets`, `ExecuteChangeSet`, `DescribeStacks`, `DescribeStackEvents` y `GetTemplateSummary` sobre el stack. Además, `CreateChangeSet` sobre la transformación `AWS::Serverless-2016-10-31`.
+  - `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `ListChangeSets`, `DeleteChangeSet` (para descartar change sets pendientes de runs anteriores), `ExecuteChangeSet`, `DescribeStacks`, `DescribeStackEvents` y `GetTemplateSummary` sobre el stack. Además, `CreateChangeSet` sobre la transformación `AWS::Serverless-2016-10-31`.
   - `s3:PutObject` y `s3:GetObject` en `SAM_ARTIFACTS_BUCKET/eira-<stage>/*`.
   - `s3:PutObject`, `s3:DeleteObject` y `s3:ListBucket` en el bucket del frontend, y `cloudfront:CreateInvalidation` en su distribución.
   - `iam:PassRole` solo para `eira-<stage>-cfn-exec`, con `iam:PassedToService = cloudformation.amazonaws.com`.
