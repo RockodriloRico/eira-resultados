@@ -3352,6 +3352,8 @@ Resources:
   ConfigDeliveryChannel:
     Type: AWS::Config::DeliveryChannel
     Condition: CreateAwsConfig
+    # AWS Config exige que el grabador exista antes de aceptar el canal de entrega.
+    DependsOn: ConfigRecorder
     Properties:
       Name: !Sub eira-${Stage}
       S3BucketName: !Ref ComplianceLogsBucket
